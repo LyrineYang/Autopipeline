@@ -21,6 +21,119 @@ total across all kernels.
 
 ---
 
+## Experimental Tree Search Mode
+
+This file describes the default long-running single-agent path.
+The repo now also contains an experimental tree-search adapter for single-kernel optimization:
+
+- entrypoint: `uv run tree_optimize.py`
+- scope: one extracted kernel at a time
+- evaluation: still uses fixed `bench.py` and optional `verify.py`
+- search control: beam-style expansion, frontier retention, pruning, and per-node state dumps
+- high-level guidance: `watchman` builds branch identities from profile facts, hardware context, and recent insight history; in the current single-kernel harness it can also consume local evaluator summaries
+
+Use tree mode when you want:
+
+- many short, isolated optimization attempts instead of one long conversation
+- per-branch sandboxes and logs
+- an external planner / executor / reflector command bridge
+- a fixed benchmark loop with explicit branch identities
+
+Do not treat tree mode as a replacement for the multi-kernel orchestrator yet.
+It is currently:
+
+- single-kernel only
+- copy-sandbox only
+- no resume
+- able to consume lightweight pipeline-style profile hints, but still limited to kernel-local edits and kernel-local response families
+- best suited for controlled experiments and search-strategy development
+
+### Tree Mode Smoke Tests
+
+Structural smoke test:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+GPU smoke test:
+
+```bash
+uv run prepare.py
+uv run profile.py --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
+uv run extract.py --top 1
+
+uv run tree_optimize.py \
+  --kernel-file workspace/kernel_matmul_1.py \
+  --run-name smoke-tree \
+  --beam-width 1 \
+  --max-rounds 1 \
+  --children-per-expansion 1 \
+  --bench-arg=--quick
+```
+
+Expected outputs:
+
+- `workspace/tree_runs/<timestamp>-<kernel>/search_state.json`
+- `workspace/tree_runs/<timestamp>-<kernel>/tree_events.jsonl`
+- per-node `bench.stdout.log` and `bench.stderr.log`
+- a promoted sibling file next to the source kernel, named `*_optimized.py`
+
+When no external planner / executor / reflector commands are provided, the adapter still runs:
+
+- `watchman` proposes branch cards
+- fallback execution preserves the candidate as-is
+- the node still enters benchmark and reflection
+
+This validates the harness and search plumbing, not optimization quality.
+
+### Tree Mode With External Agents
+
+Tree mode can shell out to up to three commands:
+
+- `--planner-command`
+- `--executor-command`
+- `--reflector-command`
+
+Each command receives:
+
+- `TREE_PROMPT_PATH`
+- `TREE_PAYLOAD_PATH`
+- `TREE_OUTPUT_PATH`
+
+The planner should treat `watchman` as the frozen high-level decision layer.
+If it only returns the older minimal hypothesis schema, the adapter will backfill the missing family and guardrail fields from the matching watchman branch card.
+
+Minimal example:
+
+```bash
+uv run tree_optimize.py \
+  --kernel-file workspace/kernel_matmul_1.py \
+  --run-name matmul-tree-agent \
+  --beam-width 2 \
+  --max-rounds 3 \
+  --children-per-expansion 2 \
+  --planner-command 'python scripts/tree_agent.py propose' \
+  --executor-command 'python scripts/tree_agent.py execute' \
+  --reflector-command 'python scripts/tree_agent.py reflect'
+```
+
+### Tree Mode Interpretation
+
+The important role split is:
+
+- `watchman`: freeze high-level branch identity
+- planner: propose branch-local hypotheses under that high-level prior
+- executor: perform one bounded experiment inside the branch
+- reflector: compress the node result into one reusable insight
+- tree engine: manage beam expansion, pruning, promotion, and state persistence
+
+This mode is meant to study search quality, branch diversity, and agent guidance.
+For the broader long-term framework, the key prior should come from pipeline bottleneck understanding and hardware profile, not from benchmark metrics alone.
+The default long-running path in the rest of this file is still the main production workflow.
+
+---
+
 ## Phase A: Model Analysis (with human)
 
 This phase is interactive. You work with the human to understand the model, profile it,

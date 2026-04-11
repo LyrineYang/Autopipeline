@@ -24,6 +24,7 @@ Each experiment takes ~90 seconds. That's ~40 experiments/hour, ~320 overnight, 
 ## Quick Start
 
 **Requirements:** NVIDIA GPU (tested on H100/A100/RTX 4090), Python 3.10+, [uv](https://docs.astral.sh/uv/).
+This repo already ships a `.python-version` file pinned to `3.10`; use that as the default interpreter target for both the main pipeline and the tree-search adapter.
 
 ```bash
 # Install uv (if you don't have it)
@@ -63,6 +64,122 @@ The agent will:
 4. Verify end-to-end correctness and report total speedup
 
 `program.md` is intentionally comprehensive so the agent can run 10+ hours without getting stuck. It includes a 6-tier optimization playbook, decision framework, crash handling, and Amdahl's law reasoning.
+
+## Tree Search Adapter (Experimental)
+
+The default path above is the long-running single-agent loop driven by `program.md`.
+The tree adapter is a separate experimental path for single-kernel search with short, isolated branches.
+
+Current scope:
+
+- single-kernel only
+- copy-based sandbox only
+- no resume yet
+- `watchman` can read lightweight pipeline-style profile hints, but this adapter still edits only sandbox-local `kernel.py` and therefore only emits kernel-local response families
+- good for controlled search experiments, not a replacement for `orchestrate.py`
+
+### Setup
+
+Use the same environment as the main pipeline:
+
+```bash
+uv python install $(cat .python-version)
+uv venv --python $(cat .python-version)
+uv sync
+```
+
+Optional extras are unchanged:
+
+- `uv sync --extra models`
+- `uv sync --extra cuda`
+- `uv sync --extra kernelbench`
+
+### Smoke Tests
+
+Structural smoke test:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+GPU smoke test:
+
+```bash
+uv run prepare.py
+uv run profile.py --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
+uv run extract.py --top 1
+
+uv run tree_optimize.py \
+  --kernel-file workspace/kernel_matmul_1.py \
+  --run-name smoke-tree \
+  --beam-width 1 \
+  --max-rounds 1 \
+  --children-per-expansion 1 \
+  --bench-arg=--quick
+```
+
+Expected outputs:
+
+- `workspace/tree_runs/<timestamp>-<kernel>/search_state.json`
+- `workspace/tree_runs/<timestamp>-<kernel>/tree_events.jsonl`
+- per-node benchmark logs under `nodes/`
+- a promoted `*_optimized.py` next to the source kernel
+
+### Run Tree Search
+
+Basic run:
+
+```bash
+uv run tree_optimize.py \
+  --kernel-file workspace/kernel_matmul_1.py \
+  --run-name matmul-tree \
+  --beam-width 2 \
+  --max-rounds 3 \
+  --children-per-expansion 2 \
+  --bench-arg=--quick
+```
+
+Useful flags:
+
+- `--bench-arg` can be repeated and is passed directly to `bench.py`
+- use `--bench-arg=...` when the argument starts with `-`
+- add `--verify-command` to run end-to-end verification after promotion
+
+### External Agent Commands
+
+The adapter can call three optional commands:
+
+- `--planner-command`
+- `--executor-command`
+- `--reflector-command`
+
+Each command receives:
+
+- `TREE_PROMPT_PATH`
+- `TREE_PAYLOAD_PATH`
+- `TREE_OUTPUT_PATH`
+
+Expected JSON outputs:
+
+- planner: a list of hypotheses with `id`, `title`, `core_hypothesis`; it may also return `family`, `rationale`, `target_signals`, `supporting_evidence`, and `disallowed_directions`
+- executor: `status`, `summary`, `changed`
+- reflector: `polarity`, `summary`, `evidence`
+
+If the planner returns only the older minimal hypothesis fields, the adapter backfills the missing watchman branch identity fields automatically.
+
+Example:
+
+```bash
+uv run tree_optimize.py \
+  --kernel-file workspace/kernel_matmul_1.py \
+  --run-name matmul-tree-agent \
+  --beam-width 2 \
+  --max-rounds 3 \
+  --children-per-expansion 2 \
+  --planner-command 'python scripts/tree_agent.py propose' \
+  --executor-command 'python scripts/tree_agent.py execute' \
+  --reflector-command 'python scripts/tree_agent.py reflect'
+```
 
 ## The Pipeline
 
@@ -174,8 +291,18 @@ kernels upload . --repo_id your-username/my_matmul
 
 ## Project Structure
 
+The original project structure is still centered on the fixed evaluation loop: profile, extract, benchmark, verify.
+What the tree-search work adds is a thin orchestration layer around that loop, not a replacement for it.
+In plain terms, the new pieces do four jobs:
+
+- they keep search control separate from task logic, so beam expansion, frontier updates, pruning, state dumps, and promotion all live in one place
+- they adapt the existing AutoKernel benchmark path to node-local sandboxes, so each branch edits its own `kernel.py` without touching `bench.py` or `verify.py`
+- they package short per-node context and expose a simple command bridge, so Claude, Codex, or another external agent can plug in without changing this repo's runtime core
+- they add focused tests around the tree engine, command adapter, and AutoKernel task adapter, so the new path can be smoke-tested independently from a full overnight optimization run
+
 ```
 autokernel/
+  .python-version       pinned default Python version for local env setup
   kernel.py             the file the agent modifies (one kernel at a time)
   program.md            agent instructions -- the "research org code"
 
@@ -187,9 +314,12 @@ autokernel/
   extract.py            extract bottleneck kernels into workspace/
   orchestrate.py        multi-kernel scheduler (Amdahl's law)
   verify.py             end-to-end model verification + speedup report
+  tree_optimize.py      single-kernel tree-search entrypoint
   export_hf.py          export optimized kernels to HuggingFace Kernels format
   analysis.py           experiment visualization (generates progress.png)
 
+  tree/                 tree-search adapter (engine, task adapter, prompts, command bridge)
+  tests/                tree adapter and task smoke tests
   kernels/              starter Triton kernels (9 types)
   kernels/cuda/         starter CUDA C++ kernels (9 types, tensor core accelerated)
   kernelbench/          KernelBench integration (bridge, eval harness, scorer)
