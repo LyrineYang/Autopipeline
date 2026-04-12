@@ -781,3 +781,271 @@ kernel 优化并不是事后被树结构“包装”起来的任务。
 5. 哪些 hardware context 值得纳入，哪些会引入太多噪音
 
 在这些问题明确之前，不宜过早把 planner 直接实现成又一个大而全的 agent。
+
+## 现在的 Hierarchy（简版）
+
+当前实现刻意保持轻层级。
+
+- 决策层：`watchman` 内部用 `RegionGraph -> BottleneckCard -> Branch Card` 组织思考。
+- 运行层：事实输入 -> `watchman` -> tree controller -> executor -> evaluator / verifier。
+- `RegionGraph` 只回答“问题在哪里”，不做独立控制。
+- `BottleneckCard` 只回答“问题是什么、先试哪类方案”，不保存长日志。
+- prompt 只暴露 focus region 和少量 nearby regions，不把整张图灌给模型。
+
+当前已经做出的关键选择：
+
+- `watchman` 只冻结高层方向，不写代码。
+- `AutoKernelTask` 仍然是单-kernel harness，只编辑 sandbox-local `kernel.py`。
+- pipeline 风格 hints 已经可以进入 diagnosis，但 response family 仍然裁剪到 kernel-local family。
+- benchmark 在当前 harness 里只是局部 evaluator，不是未来通用 framework 的核心 prior。
+
+## Pipeline Baseline 还缺什么
+
+新的 pipeline baseline 还缺这几项：
+
+- 真正的 pipeline profiler：稳定产出 `optimization_scope`、`pipeline_region_label`、`upstream_regions`、`downstream_regions`、`profile_bottlenecks`。
+- 独立的 pipeline task：支持 kernel-local、region-local、cross-kernel 三种 edit surface。
+- scope router：判断当前问题该进 kernel、region 还是 pipeline search。
+- pipeline evaluator / verifier：能判断 stage / region / end-to-end 是否真的改善。
+
+当上面四项都具备，并且 `watchman` 能稳定消费这些轻量字段生成 branch identity 时，就可以认为新的 pipeline optimizer baseline 完成。
+
+## 后续实验矩阵（简版）
+
+建议先固定五条轴：
+
+- Prior 来源：静态结构 / +pipeline profile / +hardware / +history。
+- 优化 scope：kernel / region / pipeline。
+- Branch identity：自由 hypothesis / family-only / family+guardrail。
+- 执行面：单文件 / region-local / cross-kernel。
+- 裁决信号：local micro / stage-region latency / end-to-end。
+
+建议按阶段做实验：
+
+- Phase 0：保留当前基线（原始 AutoKernel 长循环 vs 当前 single-kernel tree adapter）。
+- Phase 1：只测 prior 是否提升 proposal 质量。
+- Phase 2：只测 scope 路由是否值得。
+- Phase 3：在有 pipeline task 后，再测 pipeline family。
+- Phase 4：最后再测 history / archive。
+
+## 当前 Hierarchy 总结
+
+现在的 hierarchy 分成两类：
+
+### 1. 决策层级
+
+这部分主要存在于 `watchman` 内部，不被拆成很多运行时角色。
+
+- `RegionGraph` 回答“问题在哪里”
+- `BottleneckCard` 回答“问题是什么”
+- `Branch Card` 回答“先试哪类方案”
+
+这里的关键选择是：
+
+- 让 hierarchy 存在于决策逻辑里
+- 不把它扩成很多显式 agent
+- prompt 里只暴露一个 focus region 和少量 nearby regions
+
+### 2. 运行层级
+
+运行时角色仍然保持很少：
+
+- 上游事实输入：今天是 extracted kernel + hardware + local evaluator + history，未来可以换成真正的 pipeline profiler / trace
+- `watchman`：压缩高层先验
+- tree controller：分叉、保留、剪枝、记状态
+- executor：做一次局部实现
+- evaluator / verifier：做外部裁决
+
+这里的关键选择是：
+
+- 不新增 observation agent / diagnosis agent / treatment agent
+- 不新增独立的 region-graph controller
+- 不做复杂长期 memory 服务
+
+## 当前已经做出的设计选择
+
+为了保持简洁，我们已经明确做了这些选择：
+
+1. `RegionGraph` 是轻量对象，不是复杂图系统。
+2. 每个 region 一个 card 就够，先不做更复杂的 region program。
+3. `watchman` 只负责冻结高层方向，不负责写代码。
+4. 当前 `AutoKernelTask` 仍然是单-kernel harness，只编辑 sandbox-local `kernel.py`。
+5. 当前代码已经允许 pipeline 风格 hints 进入 diagnosis，但 response family 仍然裁剪到 kernel-local family。
+6. benchmark 在当前 harness 里是局部 evaluator，不是未来通用 framework 的核心 prior。
+7. 外部 planner / executor / reflector 都是可选的，tree adapter 本身先保证结构闭环。
+
+## 距离 Pipeline Optimizer 的完整 Baseline 还差什么
+
+如果目标从单-kernel tree harness 走到真正的 pipeline optimizer，当前还缺五样东西：
+
+### 1. 真正的 Pipeline Profiler
+
+不是今天这种 extracted kernel 上的局部信号，而是能稳定产出这些轻量字段的上游阶段：
+
+- `optimization_scope`
+- `pipeline_region_label`
+- `upstream_regions`
+- `downstream_regions`
+- `profile_bottlenecks`
+
+### 2. Pipeline Task
+
+当前 `AutoKernelTask` 只能改单文件 `kernel.py`。
+真正的 pipeline optimizer 需要新的 task，至少能表示：
+
+- kernel-local edit
+- region-local edit
+- cross-kernel edit
+
+### 3. Kernel / Region / Pipeline 路由
+
+现在还没有一个稳定路由器来判断：
+
+- 这是单 kernel 问题
+- 这是 region 问题
+- 还是应该进入 pipeline-level search
+
+### 4. Pipeline Evaluator / Verifier
+
+当前 `bench.py` 和 `verify.py` 足够支撑单-kernel harness。
+但新的 baseline 需要：
+
+- stage / region latency
+- pipeline bottleneck 改善
+- end-to-end correctness 和端到端收益
+
+### 5. Pipeline-Level Treatment Family 的真正执行面
+
+今天文档里讨论了：
+
+- fusion
+- layout propagation
+- overlap / pipelining
+- launch consolidation
+
+但当前还没有能真正执行这些方案的 task 和 edit surface。
+
+## 新 Baseline 什么时候算完成
+
+不是“做完所有研究问题”才算完成。
+新的 pipeline baseline 在下面这些条件同时成立时，就算完成：
+
+1. 上游 profiler 能稳定产出轻量字段，而不是长日志。
+2. `watchman` 能消费这些字段，稳定生成 `RegionGraph + BottleneckCard + Branch Card`。
+3. 系统能明确区分 kernel / region / pipeline 三种 scope。
+4. 不同 scope 能进入对应的 task，而不是都挤进单文件 `kernel.py`。
+5. 至少有一条 pipeline evaluator 路径能判断“这条 branch 是否真的改善了 pipeline bottleneck”。
+
+达到这五条，就可以说“新的 pipeline optimizer baseline 完成了”。
+
+archive、复杂剪枝、cost model、motif reuse 都可以放到 baseline 之后。
+
+## 后续实验矩阵
+
+为了避免矩阵无限膨胀，后面建议先固定五条主轴。
+
+### 1. Prior 来源
+
+- 静态结构
+- 静态结构 + pipeline profile
+- 静态结构 + pipeline profile + hardware
+- 静态结构 + pipeline profile + hardware + history
+
+### 2. 优化 Scope
+
+- kernel
+- region
+- pipeline
+
+### 3. Branch Identity 强度
+
+- 自由 hypothesis
+- family-only
+- family + primary / secondary family
+- family + guardrail + avoid list
+
+### 4. 执行面
+
+- 单文件 kernel edit
+- region-local edit
+- cross-kernel / pipeline edit
+
+### 5. 裁决信号
+
+- local micro benchmark
+- stage / region latency
+- end-to-end pipeline speedup
+
+## 后续实验方案
+
+建议按阶段做，而不是一上来全因子展开。
+
+### Phase 0: 保留当前基线
+
+对照组：
+
+- 原始 AutoKernel 长循环
+- 当前 single-kernel tree adapter
+
+目的是保留一个稳定的出发点。
+
+### Phase 1: 验证 Prior 是否真的提升 Proposal 质量
+
+先只比较 Prior 来源这一条轴。
+看：
+
+- time-to-first-improvement
+- valid branch rate
+- branch collapse rate
+
+### Phase 2: 验证 Scope 路由是否值得
+
+比较：
+
+- 把所有问题都塞进 kernel search
+- 先做 bottleneck diagnosis，再路由到 kernel / region / pipeline
+
+看：
+
+- diagnosis-to-treatment hit rate
+- fixed budget 下的最好收益
+
+### Phase 3: 验证 Pipeline Family 是否必要
+
+只在有 pipeline task 之后做。
+比较：
+
+- kernel-only families
+- kernel + pipeline families
+- primary / secondary family
+
+看：
+
+- 是否更快找到有效方向
+- 是否减少重复尝试
+- 是否提升端到端收益
+
+### Phase 4: 验证 History / Archive 是否值得
+
+最后再比较：
+
+- 无 history
+- 只用最近 insight
+- history + motif / archive
+
+看：
+
+- proposal 质量是否继续提升
+- 是否减少重复失败
+
+## 当前最务实的下一步
+
+如果按“先把 baseline 做出来”这个目标推进，最直接的顺序还是：
+
+1. 做真正的 pipeline profiler 轻量字段输出
+2. 做 scope router
+3. 做独立的 pipeline task
+4. 接 pipeline evaluator / verifier
+5. 再跑 Phase 1 和 Phase 2 实验
+
+这五步做完，新的 baseline 才算真正从单-kernel tree harness 走到 pipeline optimizer。

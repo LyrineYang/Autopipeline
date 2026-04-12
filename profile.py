@@ -7,7 +7,7 @@ Usage:
     uv run profile.py --model models/gpt2.py --class-name GPT2 --input-shape 1,1024
     uv run profile.py --module transformers --class-name AutoModelForCausalLM --pretrained meta-llama/Llama-2-7b-hf --input-shape 1,2048
 
-Output: profile_report.json in workspace/ directory
+Output: profile_report.json and pipeline_profile.json in workspace/ directory
 """
 
 from __future__ import annotations
@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+
+from pipeline_profile import build_pipeline_profile, save_pipeline_profile
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1089,6 +1091,14 @@ def main() -> int:
         json.dump(report, f, indent=2)
 
     print(f"Profile saved to {output_path}")
+
+    pipeline_output_path = os.path.join(WORKSPACE_DIR, "pipeline_profile.json")
+    try:
+        pipeline_profile = build_pipeline_profile(report)
+        save_pipeline_profile(pipeline_profile, Path(pipeline_output_path))
+        print(f"Pipeline profile saved to {pipeline_output_path}")
+    except Exception as e:
+        print(f"  WARNING: Could not build pipeline profile: {e}")
 
     # Print exported artifacts and next-step suggestions
     if extras:

@@ -49,6 +49,9 @@ uv run extract.py --top 5
 uv run bench.py
 ```
 
+`profile.py` now writes both `workspace/profile_report.json` and `workspace/pipeline_profile.json`.  
+`extract.py` reads the lightweight pipeline profile and copies those hints into each extracted kernel header so the tree adapter can use them later.
+
 ## Running the Agent
 
 Spin up Claude, Codex, or any coding agent in this directory:
