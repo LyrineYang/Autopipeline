@@ -18,9 +18,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kernel-file", required=True, help="Source kernel file to optimize.")
     parser.add_argument("--run-name", default=None, help="Human-readable run name.")
     parser.add_argument("--run-dir", default=None, help="Output run directory.")
-    parser.add_argument("--beam-width", type=int, default=2)
-    parser.add_argument("--max-rounds", type=int, default=1)
-    parser.add_argument("--children-per-expansion", type=int, default=2)
+    parser.add_argument("--beam-width", type=int, default=2, help="Upper bound for frontier width.")
+    parser.add_argument("--max-rounds", type=int, default=1, help="Upper bound for search rounds.")
+    parser.add_argument(
+        "--children-per-expansion",
+        type=int,
+        default=2,
+        help="Upper bound for children proposed from one parent node.",
+    )
     parser.add_argument(
         "--bench-arg",
         action="append",

@@ -117,6 +117,17 @@ def build_proposal_prompt(
     watchman_lines = ""
     if watchman_packet is not None:
         families = ", ".join(card.family for card in watchman_packet.branch_cards)
+        policy_lines = ""
+        if watchman_packet.search_policy is not None:
+            policy = watchman_packet.search_policy
+            policy_lines = (
+                f"Recommended scope: {policy.recommended_scope or 'unspecified'}\n"
+                f"Exploration bias: {policy.exploration_bias}\n"
+                f"Suggested children: {policy.suggested_children if policy.suggested_children is not None else 'use upper bound'}\n"
+                f"Suggested beam width: {policy.suggested_beam_width if policy.suggested_beam_width is not None else 'use upper bound'}\n"
+                f"Suggested rounds: {policy.suggested_rounds if policy.suggested_rounds is not None else 'use upper bound'}\n"
+                f"Stop conditions: {', '.join(policy.stop_conditions) if policy.stop_conditions else 'none'}\n"
+            )
         region_lines = ""
         if watchman_packet.region_graph is not None and watchman_packet.region_graph.regions:
             graph = watchman_packet.region_graph
@@ -155,6 +166,7 @@ def build_proposal_prompt(
         watchman_lines = (
             f"{region_lines}"
             f"{bottleneck_lines}"
+            f"{policy_lines}"
             f"Watchman branch families: {families}\n"
             "Use the watchman branch cards from the payload as the frozen high-level decision layer.\n"
             "Prefer one child per distinct family before proposing close variants.\n"

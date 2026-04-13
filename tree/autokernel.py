@@ -329,6 +329,12 @@ class AutoKernelTask(OptimizationTask):
         bottleneck_card["response_families"] = [
             str(entry.get("family", "")) for entry in branch_families if entry.get("family")
         ]
+        search_policy = _search_policy_hint(
+            bottleneck_card=bottleneck_card,
+            benchmark_context=benchmark_context,
+            history_context=history_context,
+            limit=limit,
+        )
         return {
             "static_prior": self.profile_prior,
             "hardware_context": hardware_context,
@@ -336,12 +342,14 @@ class AutoKernelTask(OptimizationTask):
             "history_context": history_context,
             "region_graph": region_graph,
             "bottleneck_card": bottleneck_card,
+            "search_policy": search_policy,
             "branch_families": branch_families,
             "frozen_decisions": [
                 "Keep branch identities aligned to distinct mechanism families.",
                 "Use profile facts, hardware context, and recent insights as priors before proposing variants.",
                 "Treat the region graph as the location prior and the bottleneck card as the diagnosis prior.",
                 "Current AutoKernelTask still edits only sandbox-local kernel.py, so response families stay kernel-local even if profile hints come from a wider pipeline context.",
+                "Treat CLI beam and round settings as upper bounds; let watchman tighten them when the diagnosis is clear.",
                 "Executor should stay inside the chosen family instead of reopening high-level direction search.",
             ],
         }
@@ -749,6 +757,61 @@ def _bottleneck_rationale(diagnoses: list[str], *, scope: str) -> str:
     if len(diagnoses) == 1:
         return f"{prefix} points to {diagnoses[0]}."
     return f"{prefix} points to {diagnoses[0]} with secondary pressure from {diagnoses[1]}."
+
+
+def _search_policy_hint(
+    *,
+    bottleneck_card: dict[str, Any],
+    benchmark_context: dict[str, Any],
+    history_context: dict[str, Any],
+    limit: int,
+) -> dict[str, Any]:
+    diagnoses = _string_values(bottleneck_card.get("diagnoses"))
+    scope = str(bottleneck_card.get("scope", "kernel"))
+    accepted = bool(benchmark_context.get("accepted"))
+    score = benchmark_context.get("score")
+    positive_count = len(_string_values(history_context.get("positive_insights")))
+    negative_count = len(_string_values(history_context.get("negative_insights")))
+
+    if "uncertain_local_bottleneck" in diagnoses or negative_count >= positive_count + 2:
+        exploration_bias = "explore"
+    elif accepted and score is not None and float(score) > 1.0 and positive_count >= negative_count:
+        exploration_bias = "exploit"
+    else:
+        exploration_bias = "balanced"
+
+    suggested_children = {
+        "explore": min(limit, 3),
+        "balanced": min(limit, 2),
+        "exploit": 1,
+    }[exploration_bias]
+    suggested_beam_width = {
+        "explore": min(limit, 2),
+        "balanced": 2 if limit > 1 else 1,
+        "exploit": 1,
+    }[exploration_bias]
+    suggested_rounds = {
+        "explore": 3,
+        "balanced": 2,
+        "exploit": 1,
+    }[exploration_bias]
+
+    stop_conditions: list[str] = []
+    if accepted and score is not None and float(score) > 1.5:
+        stop_conditions.append("stop when a child preserves correctness and clearly beats the current baseline")
+    if "uncertain_local_bottleneck" in diagnoses:
+        stop_conditions.append("stop broad branching once one family produces a consistent accepted improvement")
+    if scope == "pipeline":
+        stop_conditions.append("do not escalate beyond kernel-local execution until a pipeline task exists")
+
+    return {
+        "recommended_scope": scope,
+        "exploration_bias": exploration_bias,
+        "suggested_children": suggested_children,
+        "suggested_rounds": suggested_rounds,
+        "suggested_beam_width": suggested_beam_width,
+        "stop_conditions": stop_conditions,
+    }
 
 
 def _recommend_branch_families(

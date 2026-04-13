@@ -3,7 +3,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .types import BottleneckCard, Hypothesis, RegionCard, RegionGraph, RootMemory, SearchNode, TaskSnapshot
+from .types import (
+    BottleneckCard,
+    Hypothesis,
+    RegionCard,
+    RegionGraph,
+    RootMemory,
+    SearchNode,
+    SearchPolicyHint,
+    TaskSnapshot,
+)
 
 
 @dataclass(slots=True)
@@ -14,6 +23,7 @@ class WatchmanPacket:
     history_context: dict[str, Any] = field(default_factory=dict)
     region_graph: RegionGraph | None = None
     bottleneck_card: BottleneckCard | None = None
+    search_policy: SearchPolicyHint | None = None
     branch_cards: list[Hypothesis] = field(default_factory=list)
     frozen_decisions: list[str] = field(default_factory=list)
 
@@ -59,6 +69,10 @@ class Watchman:
                     response_families=[card.family for card in seed_cards],
                     rationale="No task-specific watchman context is available.",
                 ),
+                search_policy=SearchPolicyHint(
+                    recommended_scope=task_snapshot.task_type,
+                    exploration_bias="balanced",
+                ),
                 branch_cards=seed_cards,
                 frozen_decisions=[
                     "No task-specific watchman context is available.",
@@ -78,6 +92,7 @@ class Watchman:
             history_context=_dict_value(raw_context.get("history_context")) or _history_context(root),
             region_graph=self._build_region_graph(raw_context, task_snapshot),
             bottleneck_card=self._build_bottleneck_card(raw_context, task_snapshot, branch_cards),
+            search_policy=self._build_search_policy(raw_context, task_snapshot, branch_cards, limit),
             branch_cards=branch_cards,
             frozen_decisions=_string_list(
                 raw_context.get(
@@ -147,6 +162,31 @@ class Watchman:
             rationale="Use the current watchman branch cards as the recommended response families.",
         )
 
+    def _build_search_policy(
+        self,
+        raw_context: dict[str, Any],
+        task_snapshot: TaskSnapshot,
+        branch_cards: list[Hypothesis],
+        limit: int,
+    ) -> SearchPolicyHint:
+        raw = raw_context.get("search_policy")
+        if isinstance(raw, dict):
+            return SearchPolicyHint(
+                recommended_scope=str(raw.get("recommended_scope", task_snapshot.task_type)),
+                exploration_bias=str(raw.get("exploration_bias", "balanced")),
+                suggested_children=_optional_int(raw.get("suggested_children")),
+                suggested_rounds=_optional_int(raw.get("suggested_rounds")),
+                suggested_beam_width=_optional_int(raw.get("suggested_beam_width")),
+                stop_conditions=_string_list(raw.get("stop_conditions")),
+            )
+
+        suggested_children = min(limit, len(branch_cards)) if branch_cards else None
+        return SearchPolicyHint(
+            recommended_scope=task_snapshot.task_type,
+            exploration_bias="balanced",
+            suggested_children=suggested_children,
+        )
+
     def _build_region_graph(
         self,
         raw_context: dict[str, Any],
@@ -208,3 +248,13 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None

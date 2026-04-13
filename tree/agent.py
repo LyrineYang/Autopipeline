@@ -17,7 +17,7 @@ from .prompts import (
 )
 from .task import OptimizationTask
 from .types import ExecutionResult, Hypothesis, Insight, RootMemory, SearchNode, TaskSnapshot
-from .watchman import Watchman
+from .watchman import Watchman, WatchmanPacket
 
 
 class AgentStepError(RuntimeError):
@@ -33,6 +33,7 @@ class AgentAdapter(abc.ABC):
         root: RootMemory,
         parent: SearchNode,
         limit: int,
+        watchman_packet: WatchmanPacket | None = None,
     ) -> list[Hypothesis]:
         raise NotImplementedError
 
@@ -70,8 +71,9 @@ class NoOpAgentAdapter(AgentAdapter):
         root: RootMemory,
         parent: SearchNode,
         limit: int,
+        watchman_packet: WatchmanPacket | None = None,
     ) -> list[Hypothesis]:
-        packet = self.watchman.build_packet(task, task_snapshot, root, parent, limit)
+        packet = watchman_packet or self.watchman.build_packet(task, task_snapshot, root, parent, limit)
         return packet.branch_cards[:limit]
 
     def execute(
@@ -166,8 +168,9 @@ class CommandAgentAdapter(AgentAdapter):
         root: RootMemory,
         parent: SearchNode,
         limit: int,
+        watchman_packet: WatchmanPacket | None = None,
     ) -> list[Hypothesis]:
-        watchman_packet = self.watchman.build_packet(task, task_snapshot, root, parent, limit)
+        watchman_packet = watchman_packet or self.watchman.build_packet(task, task_snapshot, root, parent, limit)
         if not self.planner_command:
             return watchman_packet.branch_cards[:limit]
 

@@ -66,6 +66,14 @@ class ContextTask(SeedOnlyTask):
                 "avoid_families": ["instruction_selection"],
                 "rationale": "Local evidence points to memory pressure first.",
             },
+            "search_policy": {
+                "recommended_scope": "pipeline",
+                "exploration_bias": "explore",
+                "suggested_children": 2,
+                "suggested_rounds": 3,
+                "suggested_beam_width": 2,
+                "stop_conditions": ["stop when one family clearly wins"],
+            },
             "branch_families": [
                 {
                     "id": "memory",
@@ -137,6 +145,10 @@ class WatchmanTests(unittest.TestCase):
         self.assertEqual(packet.bottleneck_card.scope, "pipeline")
         self.assertEqual(packet.bottleneck_card.diagnoses, ["memory_bandwidth_pressure", "kernel_boundary_overhead"])
         self.assertEqual(packet.bottleneck_card.response_families[0], "memory_hierarchy")
+        self.assertIsNotNone(packet.search_policy)
+        self.assertEqual(packet.search_policy.recommended_scope, "pipeline")
+        self.assertEqual(packet.search_policy.exploration_bias, "explore")
+        self.assertEqual(packet.search_policy.suggested_children, 2)
         self.assertIn("high-level decision", " ".join(packet.frozen_decisions).lower())
 
     def test_proposal_prompt_only_shows_focus_region_and_nearby_regions(self) -> None:

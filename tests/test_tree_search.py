@@ -80,6 +80,37 @@ class FakeTask:
         return self._seed_hypotheses[:limit]
 
 
+class PolicyAwareFakeTask(FakeTask):
+    def __init__(
+        self,
+        *,
+        seed_hypotheses: list[Hypothesis],
+        score_by_hypothesis: dict[str, float],
+        accepted_hypotheses: set[str],
+        search_policy: dict[str, object],
+    ) -> None:
+        super().__init__(
+            seed_hypotheses=seed_hypotheses,
+            score_by_hypothesis=score_by_hypothesis,
+            accepted_hypotheses=accepted_hypotheses,
+        )
+        self.search_policy = search_policy
+
+    def watchman_context(self, parent, root, limit):
+        return {
+            "branch_families": [
+                {
+                    "id": item.id,
+                    "family": item.family,
+                    "title": item.title,
+                    "core_hypothesis": item.core_hypothesis,
+                }
+                for item in self._seed_hypotheses[:limit]
+            ],
+            "search_policy": self.search_policy,
+        }
+
+
 class FakeAgent(AgentAdapter):
     def __init__(self, *, proposals_by_parent: dict[str, list[Hypothesis]]) -> None:
         self.proposals_by_parent = proposals_by_parent
@@ -91,6 +122,7 @@ class FakeAgent(AgentAdapter):
         root,
         parent: SearchNode,
         limit: int,
+        watchman_packet=None,
     ) -> list[Hypothesis]:
         return self.proposals_by_parent.get(parent.id, [])[:limit]
 
@@ -307,6 +339,46 @@ class TreeSearchEngineTests(unittest.TestCase):
             self.assertTrue((run_dir / "search_state.json").exists())
             self.assertTrue((run_dir / "tree_events.jsonl").exists())
             self.assertIsNotNone(result.promoted_path)
+
+    def test_watchman_policy_can_tighten_children_beam_and_rounds(self) -> None:
+        first = Hypothesis(id="first", title="First", core_hypothesis="first-path", family="memory_hierarchy")
+        second = Hypothesis(id="second", title="Second", core_hypothesis="second-path", family="parallelization")
+        task = PolicyAwareFakeTask(
+            seed_hypotheses=[first, second],
+            score_by_hypothesis={
+                "Record the unmodified baseline candidate.": 1.0,
+                "first-path": 2.0,
+                "second-path": 3.0,
+            },
+            accepted_hypotheses={
+                "Record the unmodified baseline candidate.",
+                "first-path",
+                "second-path",
+            },
+            search_policy={
+                "recommended_scope": "kernel",
+                "exploration_bias": "exploit",
+                "suggested_children": 1,
+                "suggested_beam_width": 1,
+                "suggested_rounds": 1,
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [first, second]}),
+                config=SearchConfig(beam_width=3, max_rounds=3, children_per_expansion=2),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.total_nodes, 2)
+            self.assertEqual(result.best_node_id, "node-0002")
+            self.assertEqual(engine.root_memory.rounds_completed, 1)
+            self.assertNotIn("node-0003", engine.nodes)
 
 
 if __name__ == "__main__":

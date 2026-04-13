@@ -199,6 +199,10 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertEqual(context["bottleneck_card"]["target"], "kernel_matmul_7.py")
         self.assertIn("memory_bandwidth_pressure", context["bottleneck_card"]["diagnoses"])
         self.assertIn("memory_hierarchy", context["bottleneck_card"]["response_families"])
+        self.assertEqual(context["search_policy"]["recommended_scope"], "kernel")
+        self.assertEqual(context["search_policy"]["exploration_bias"], "exploit")
+        self.assertEqual(context["search_policy"]["suggested_children"], 1)
+        self.assertEqual(context["search_policy"]["suggested_beam_width"], 1)
         self.assertEqual(len(context["branch_families"]), 3)
         self.assertEqual(len({entry["family"] for entry in context["branch_families"]}), 3)
 
@@ -242,6 +246,8 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertIn("launch_overhead", context["bottleneck_card"]["diagnoses"])
         self.assertIn("kernel_boundary_overhead", context["bottleneck_card"]["diagnoses"])
         families = [entry["family"] for entry in context["branch_families"]]
+        self.assertEqual(context["search_policy"]["recommended_scope"], "pipeline")
+        self.assertEqual(context["search_policy"]["exploration_bias"], "balanced")
         self.assertNotIn("fusion", families)
         self.assertNotIn("launch_consolidation", families)
         self.assertNotIn("instruction_selection", families)

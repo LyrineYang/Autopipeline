@@ -56,6 +56,16 @@ class RegionGraph:
 
 
 @dataclass(slots=True)
+class SearchPolicyHint:
+    recommended_scope: str = ""
+    exploration_bias: str = "balanced"
+    suggested_children: int | None = None
+    suggested_rounds: int | None = None
+    suggested_beam_width: int | None = None
+    stop_conditions: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ExecutionResult:
     status: str
     summary: str

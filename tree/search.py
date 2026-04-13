@@ -15,6 +15,7 @@ from .types import (
     SearchNode,
     SearchResult,
 )
+from .watchman import Watchman, WatchmanPacket
 
 
 class TreeSearchEngine:
@@ -40,6 +41,7 @@ class TreeSearchEngine:
         self.frontier_node_ids: list[str] = []
         self.final_result: SearchResult | None = None
         self._node_counter = 0
+        self.watchman = Watchman()
 
     def run(self) -> SearchResult:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -50,25 +52,39 @@ class TreeSearchEngine:
         self.frontier_node_ids = [baseline.id]
 
         for round_index in range(self.config.max_rounds):
+            parent_packets = self._build_parent_packets()
+            effective_round_limit = self._effective_round_limit(parent_packets)
+            if round_index >= effective_round_limit:
+                break
+
             accepted_this_round: list[SearchNode] = []
-            for parent_id in list(self.frontier_node_ids):
-                parent = self.nodes[parent_id]
+            effective_beam_width = 1
+            for parent, packet in parent_packets:
+                effective_children = self._effective_children_limit(packet)
+                effective_beam_width = min(
+                    self.config.beam_width,
+                    max(effective_beam_width, self._effective_beam_width(packet)),
+                )
                 proposals = self.agent.propose(
                     self.task,
                     self.task_snapshot,
                     self.root_memory,
                     parent,
-                    self.config.children_per_expansion,
+                    effective_children,
+                    watchman_packet=packet,
                 )
                 self._log_event(
                     "proposal_completed",
                     {
                         "round": round_index + 1,
                         "parent_id": parent.id,
+                        "effective_children": effective_children,
+                        "recommended_scope": packet.search_policy.recommended_scope if packet.search_policy else "",
+                        "exploration_bias": packet.search_policy.exploration_bias if packet.search_policy else "",
                         "proposal_count": len(proposals),
                     },
                 )
-                for hypothesis in proposals[: self.config.children_per_expansion]:
+                for hypothesis in proposals[:effective_children]:
                     if self._is_duplicate_hypothesis(hypothesis):
                         continue
                     node = self._create_node(parent, hypothesis)
@@ -82,9 +98,9 @@ class TreeSearchEngine:
                     key=lambda item: item.evaluation_result.score if item.evaluation_result else float("-inf"),
                     reverse=True,
                 )
-                next_frontier = [node.id for node in accepted_this_round[: self.config.beam_width]]
+                next_frontier = [node.id for node in accepted_this_round[:effective_beam_width]]
                 promoted = set(next_frontier)
-                for node in accepted_this_round[self.config.beam_width :]:
+                for node in accepted_this_round[effective_beam_width:]:
                     node.status = "pruned"
                 self.frontier_node_ids = next_frontier
             else:
@@ -99,6 +115,8 @@ class TreeSearchEngine:
                     "accepted_node_ids": [node.id for node in accepted_this_round],
                     "retained_previous_frontier": not bool(accepted_this_round),
                     "retained_node_ids": sorted(promoted),
+                    "effective_beam_width": effective_beam_width,
+                    "effective_round_limit": effective_round_limit,
                 },
             )
             self._persist_state()
@@ -314,6 +332,42 @@ class TreeSearchEngine:
     def _next_node_id(self) -> str:
         self._node_counter += 1
         return f"node-{self._node_counter:04d}"
+
+    def _build_parent_packets(self) -> list[tuple[SearchNode, WatchmanPacket]]:
+        packets: list[tuple[SearchNode, WatchmanPacket]] = []
+        for parent_id in list(self.frontier_node_ids):
+            parent = self.nodes[parent_id]
+            packet = self.watchman.build_packet(
+                self.task,
+                self.task_snapshot,
+                self.root_memory,
+                parent,
+                self.config.children_per_expansion,
+            )
+            packets.append((parent, packet))
+        return packets
+
+    def _effective_children_limit(self, packet: WatchmanPacket) -> int:
+        policy = packet.search_policy
+        if policy is None or policy.suggested_children is None:
+            return self.config.children_per_expansion
+        return max(1, min(self.config.children_per_expansion, policy.suggested_children))
+
+    def _effective_beam_width(self, packet: WatchmanPacket) -> int:
+        policy = packet.search_policy
+        if policy is None or policy.suggested_beam_width is None:
+            return self.config.beam_width
+        return max(1, min(self.config.beam_width, policy.suggested_beam_width))
+
+    def _effective_round_limit(self, parent_packets: list[tuple[SearchNode, WatchmanPacket]]) -> int:
+        suggestions = [
+            packet.search_policy.suggested_rounds
+            for _, packet in parent_packets
+            if packet.search_policy is not None and packet.search_policy.suggested_rounds is not None
+        ]
+        if not suggestions:
+            return self.config.max_rounds
+        return max(1, min(self.config.max_rounds, max(suggestions)))
 
 
 def _now_iso() -> str:
