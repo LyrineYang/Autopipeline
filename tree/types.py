@@ -56,12 +56,25 @@ class RegionGraph:
 
 
 @dataclass(slots=True)
+class BranchBudgetHint:
+    children: int | None = None
+    beam_width: int | None = None
+    rounds: int | None = None
+
+
+@dataclass(slots=True)
+class ResourceHint:
+    tier: str = "balanced"
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class SearchPolicyHint:
     recommended_scope: str = ""
+    scope_options: list[str] = field(default_factory=list)
     exploration_bias: str = "balanced"
-    suggested_children: int | None = None
-    suggested_rounds: int | None = None
-    suggested_beam_width: int | None = None
+    branch_budget: BranchBudgetHint = field(default_factory=BranchBudgetHint)
+    resource_hint: ResourceHint = field(default_factory=ResourceHint)
     stop_conditions: list[str] = field(default_factory=list)
 
 

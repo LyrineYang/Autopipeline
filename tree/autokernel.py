@@ -288,6 +288,8 @@ class AutoKernelTask(OptimizationTask):
         parent: SearchNode,
         root: RootMemory,
         limit: int,
+        *,
+        upper_bounds: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         benchmark_context = _benchmark_context(parent)
         hardware_context = self._hardware_context()
@@ -333,7 +335,9 @@ class AutoKernelTask(OptimizationTask):
             bottleneck_card=bottleneck_card,
             benchmark_context=benchmark_context,
             history_context=history_context,
-            limit=limit,
+            child_limit=limit,
+            beam_limit=(upper_bounds or {}).get("beam_width", limit),
+            round_limit=(upper_bounds or {}).get("max_rounds", 1),
         )
         return {
             "static_prior": self.profile_prior,
@@ -349,7 +353,7 @@ class AutoKernelTask(OptimizationTask):
                 "Use profile facts, hardware context, and recent insights as priors before proposing variants.",
                 "Treat the region graph as the location prior and the bottleneck card as the diagnosis prior.",
                 "Current AutoKernelTask still edits only sandbox-local kernel.py, so response families stay kernel-local even if profile hints come from a wider pipeline context.",
-                "Treat CLI beam and round settings as upper bounds; let watchman tighten them when the diagnosis is clear.",
+                "Treat CLI beam and round settings as upper bounds; let watchman suggest a tighter budget when the diagnosis is clear.",
                 "Executor should stay inside the chosen family instead of reopening high-level direction search.",
             ],
         }
@@ -764,7 +768,9 @@ def _search_policy_hint(
     bottleneck_card: dict[str, Any],
     benchmark_context: dict[str, Any],
     history_context: dict[str, Any],
-    limit: int,
+    child_limit: int,
+    beam_limit: int,
+    round_limit: int,
 ) -> dict[str, Any]:
     diagnoses = _string_values(bottleneck_card.get("diagnoses"))
     scope = str(bottleneck_card.get("scope", "kernel"))
@@ -780,36 +786,61 @@ def _search_policy_hint(
     else:
         exploration_bias = "balanced"
 
-    suggested_children = {
-        "explore": min(limit, 3),
-        "balanced": min(limit, 2),
-        "exploit": 1,
+    branch_budget = {
+        "explore": {
+            "children": min(child_limit, 3),
+            "beam_width": min(beam_limit, 2),
+            "rounds": min(round_limit, 3),
+        },
+        "balanced": {
+            "children": min(child_limit, 2),
+            "beam_width": min(beam_limit, 2),
+            "rounds": min(round_limit, 2),
+        },
+        "exploit": {
+            "children": 1,
+            "beam_width": 1,
+            "rounds": 1,
+        },
     }[exploration_bias]
-    suggested_beam_width = {
-        "explore": min(limit, 2),
-        "balanced": 2 if limit > 1 else 1,
-        "exploit": 1,
+    resource_tier = {
+        "explore": "generous",
+        "balanced": "balanced",
+        "exploit": "lean",
     }[exploration_bias]
-    suggested_rounds = {
-        "explore": 3,
-        "balanced": 2,
-        "exploit": 1,
-    }[exploration_bias]
+    resource_notes: list[str] = []
+    if exploration_bias == "explore":
+        resource_notes.append("Preserve headroom while the diagnosis is still uncertain.")
+    elif exploration_bias == "exploit":
+        resource_notes.append("Prefer lean local iterations when one branch already looks promising.")
+    else:
+        resource_notes.append("Keep moderate headroom while comparing distinct local families.")
+    if scope == "pipeline":
+        resource_notes.append("Do not spend pipeline-scale resources until a pipeline task exists.")
+
+    scope_options = [scope]
+    if scope == "pipeline":
+        scope_options = ["kernel", "region", "pipeline"]
+    elif scope == "region":
+        scope_options = ["kernel", "region"]
 
     stop_conditions: list[str] = []
     if accepted and score is not None and float(score) > 1.5:
-        stop_conditions.append("stop when a child preserves correctness and clearly beats the current baseline")
+        stop_conditions.append("stop when one accepted child clearly beats the current baseline")
     if "uncertain_local_bottleneck" in diagnoses:
         stop_conditions.append("stop broad branching once one family produces a consistent accepted improvement")
     if scope == "pipeline":
-        stop_conditions.append("do not escalate beyond kernel-local execution until a pipeline task exists")
+        stop_conditions.append("stay inside kernel-local execution until a pipeline task exists")
 
     return {
         "recommended_scope": scope,
+        "scope_options": scope_options,
         "exploration_bias": exploration_bias,
-        "suggested_children": suggested_children,
-        "suggested_rounds": suggested_rounds,
-        "suggested_beam_width": suggested_beam_width,
+        "branch_budget": branch_budget,
+        "resource_hint": {
+            "tier": resource_tier,
+            "notes": resource_notes,
+        },
         "stop_conditions": stop_conditions,
     }
 

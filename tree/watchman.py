@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import inspect
 from typing import Any
 
 from .types import (
+    BranchBudgetHint,
     BottleneckCard,
     Hypothesis,
     RegionCard,
     RegionGraph,
+    ResourceHint,
     RootMemory,
     SearchNode,
     SearchPolicyHint,
@@ -41,6 +44,7 @@ class Watchman:
         root: RootMemory,
         parent: SearchNode,
         limit: int,
+        upper_bounds: dict[str, int] | None = None,
     ) -> WatchmanPacket:
         context_provider = getattr(task, "watchman_context", None)
         if not callable(context_provider):
@@ -71,6 +75,7 @@ class Watchman:
                 ),
                 search_policy=SearchPolicyHint(
                     recommended_scope=task_snapshot.task_type,
+                    scope_options=[task_snapshot.task_type],
                     exploration_bias="balanced",
                 ),
                 branch_cards=seed_cards,
@@ -80,7 +85,10 @@ class Watchman:
                 ],
             )
 
-        raw_context = context_provider(parent, root, limit)
+        if _accepts_keyword(context_provider, "upper_bounds"):
+            raw_context = context_provider(parent, root, limit, upper_bounds=upper_bounds or {})
+        else:
+            raw_context = context_provider(parent, root, limit)
         branch_cards = self._build_branch_cards(raw_context, limit)
         if not branch_cards:
             branch_cards = task.seed_hypotheses(parent, root, limit)
@@ -92,7 +100,13 @@ class Watchman:
             history_context=_dict_value(raw_context.get("history_context")) or _history_context(root),
             region_graph=self._build_region_graph(raw_context, task_snapshot),
             bottleneck_card=self._build_bottleneck_card(raw_context, task_snapshot, branch_cards),
-            search_policy=self._build_search_policy(raw_context, task_snapshot, branch_cards, limit),
+            search_policy=self._build_search_policy(
+                raw_context,
+                task_snapshot,
+                branch_cards,
+                limit,
+                upper_bounds or {},
+            ),
             branch_cards=branch_cards,
             frozen_decisions=_string_list(
                 raw_context.get(
@@ -168,23 +182,41 @@ class Watchman:
         task_snapshot: TaskSnapshot,
         branch_cards: list[Hypothesis],
         limit: int,
+        upper_bounds: dict[str, int],
     ) -> SearchPolicyHint:
         raw = raw_context.get("search_policy")
         if isinstance(raw, dict):
+            raw_budget = _dict_value(raw.get("branch_budget"))
+            scope = str(raw.get("recommended_scope", task_snapshot.task_type))
             return SearchPolicyHint(
-                recommended_scope=str(raw.get("recommended_scope", task_snapshot.task_type)),
+                recommended_scope=scope,
+                scope_options=_string_list(raw.get("scope_options")) or [scope],
                 exploration_bias=str(raw.get("exploration_bias", "balanced")),
-                suggested_children=_optional_int(raw.get("suggested_children")),
-                suggested_rounds=_optional_int(raw.get("suggested_rounds")),
-                suggested_beam_width=_optional_int(raw.get("suggested_beam_width")),
+                branch_budget=BranchBudgetHint(
+                    children=_optional_int(raw_budget.get("children", raw.get("suggested_children"))),
+                    rounds=_optional_int(raw_budget.get("rounds", raw.get("suggested_rounds"))),
+                    beam_width=_optional_int(raw_budget.get("beam_width", raw.get("suggested_beam_width"))),
+                ),
+                resource_hint=ResourceHint(
+                    tier=str(_dict_value(raw.get("resource_hint")).get("tier", raw.get("resource_tier", "balanced"))),
+                    notes=_string_list(_dict_value(raw.get("resource_hint")).get("notes", raw.get("resource_notes"))),
+                ),
                 stop_conditions=_string_list(raw.get("stop_conditions")),
             )
 
         suggested_children = min(limit, len(branch_cards)) if branch_cards else None
+        beam_width = min(
+            upper_bounds.get("beam_width", suggested_children or 1),
+            len(branch_cards) or upper_bounds.get("beam_width", 1),
+        )
         return SearchPolicyHint(
             recommended_scope=task_snapshot.task_type,
+            scope_options=[task_snapshot.task_type],
             exploration_bias="balanced",
-            suggested_children=suggested_children,
+            branch_budget=BranchBudgetHint(
+                children=suggested_children,
+                beam_width=beam_width,
+            ),
         )
 
     def _build_region_graph(
@@ -258,3 +290,14 @@ def _optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _accepts_keyword(func: Any, keyword: str) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return keyword in signature.parameters

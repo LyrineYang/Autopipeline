@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from .watchman import WatchmanPacket
 from .types import RootMemory, SearchNode, TaskSnapshot
 
@@ -120,12 +122,15 @@ def build_proposal_prompt(
         policy_lines = ""
         if watchman_packet.search_policy is not None:
             policy = watchman_packet.search_policy
+            budget = policy.branch_budget
+            resource = policy.resource_hint
             policy_lines = (
                 f"Recommended scope: {policy.recommended_scope or 'unspecified'}\n"
+                f"Scope options: {', '.join(policy.scope_options) if policy.scope_options else 'recommended only'}\n"
                 f"Exploration bias: {policy.exploration_bias}\n"
-                f"Suggested children: {policy.suggested_children if policy.suggested_children is not None else 'use upper bound'}\n"
-                f"Suggested beam width: {policy.suggested_beam_width if policy.suggested_beam_width is not None else 'use upper bound'}\n"
-                f"Suggested rounds: {policy.suggested_rounds if policy.suggested_rounds is not None else 'use upper bound'}\n"
+                f"Branch budget: children={budget.children if budget.children is not None else 'use upper bound'}, beam={budget.beam_width if budget.beam_width is not None else 'use upper bound'}, rounds={budget.rounds if budget.rounds is not None else 'use upper bound'}\n"
+                f"Resource tier: {resource.tier}\n"
+                f"Resource notes: {', '.join(resource.notes) if resource.notes else 'none'}\n"
                 f"Stop conditions: {', '.join(policy.stop_conditions) if policy.stop_conditions else 'none'}\n"
             )
         region_lines = ""
@@ -169,11 +174,13 @@ def build_proposal_prompt(
             f"{policy_lines}"
             f"Watchman branch families: {families}\n"
             "Use the watchman branch cards from the payload as the frozen high-level decision layer.\n"
+            "Treat branch family order as a prior, not a rigid ranking. You may reorder or skip families if the telemetry supports it.\n"
             "Prefer one child per distinct family before proposing close variants.\n"
         )
     return (
         "Propose distinct child hypotheses for one local optimization step.\n"
         "Return JSON only via TREE_OUTPUT_PATH.\n"
+        "Use TREE_TELEMETRY_PATH for the compact environment snapshot when you need richer context than the prompt.\n"
         f"Task objective: {task_snapshot.objective}\n"
         f"Target path: {task_snapshot.target_path}\n"
         f"Allowed editable paths: {', '.join(task_snapshot.editable_paths)}\n"
@@ -184,6 +191,7 @@ def build_proposal_prompt(
         "- Do not propose modifying benchmark, verifier, or orchestrator code.\n"
         "- Use only the root-memory summary and parent summary from the payload.\n"
         "- Treat watchman output as the high-level branch-identity prior.\n"
+        "- You may choose a narrower scope than recommended, but do not exceed the allowed edit surface.\n"
         f"Current best score: {root.best_score}\n"
         f"Parent node: {parent.id}\n"
         f"{watchman_lines}"
@@ -230,6 +238,7 @@ def build_execution_prompt(
     return (
         "Execute one bounded experiment for the current node.\n"
         "Return JSON only via TREE_OUTPUT_PATH.\n"
+        "Use TREE_TELEMETRY_PATH if you need the richer environment snapshot.\n"
         f"Task objective: {task_snapshot.objective}\n"
         f"Editable paths: {', '.join(task_snapshot.editable_paths)}\n"
         f"Candidate path: {node.candidate_path}\n"
@@ -245,6 +254,7 @@ def build_execution_prompt(
         "- Do not run or alter benchmark / verifier logic unless the task explicitly says so.\n"
         "- Perform at most one local experiment aligned with the node hypothesis.\n"
         "- Stay within the mechanism family and guardrails frozen by watchman.\n"
+        "- You may tighten the local stopping rule if the telemetry shows the branch is exhausted.\n"
         f"Current best score before this node: {root.best_score}\n"
     )
 
@@ -285,6 +295,7 @@ def build_reflection_prompt(
     return (
         "Compress the node outcome into one insight.\n"
         "Return JSON only via TREE_OUTPUT_PATH.\n"
+        "Use TREE_TELEMETRY_PATH if you need the richer environment snapshot.\n"
         f"Task objective: {task_snapshot.objective}\n"
         f"Node id: {node.id}\n"
         f"Parent node: {parent_id}\n"
@@ -296,3 +307,67 @@ def build_reflection_prompt(
         "- Base the insight on node evaluation metrics and hypothesis fit.\n"
         "- Do not restate the whole log.\n"
     )
+
+
+def build_agent_telemetry(
+    *,
+    action: str,
+    task_snapshot: TaskSnapshot,
+    root: RootMemory,
+    parent: SearchNode | None,
+    node: SearchNode | None = None,
+    watchman_packet: WatchmanPacket | None = None,
+) -> dict[str, object]:
+    telemetry: dict[str, object] = {
+        "action": action,
+        "task": {
+            "type": task_snapshot.task_type,
+            "objective": task_snapshot.objective,
+            "target_path": task_snapshot.target_path,
+            "editable_paths": task_snapshot.editable_paths,
+            "constraints": task_snapshot.constraints,
+            "reference_paths": task_snapshot.reference_paths,
+        },
+        "root_memory": summarize_root_memory(root),
+        "parent": summarize_node(parent),
+    }
+    if node is not None:
+        telemetry["node"] = summarize_node(node)
+    if watchman_packet is not None:
+        focus_region = None
+        nearby_regions: list[dict[str, object]] = []
+        if watchman_packet.region_graph is not None and watchman_packet.region_graph.regions:
+            graph = watchman_packet.region_graph
+            focus = next(
+                (region for region in graph.regions if region.id == graph.focus_region_id),
+                graph.regions[0],
+            )
+            focus_region = {
+                "id": focus.id,
+                "label": focus.label,
+                "scope": focus.scope,
+                "summary": focus.summary,
+                "signals": focus.signals,
+            }
+            nearby_regions = [
+                {
+                    "id": region.id,
+                    "label": region.label,
+                    "scope": region.scope,
+                    "signals": region.signals,
+                }
+                for region in graph.regions
+                if region.id != focus.id
+            ][:2]
+        telemetry["watchman"] = {
+            "static_prior": watchman_packet.static_prior,
+            "hardware_context": watchman_packet.hardware_context,
+            "benchmark_context": watchman_packet.benchmark_context,
+            "history_context": watchman_packet.history_context,
+            "focus_region": focus_region,
+            "nearby_regions": nearby_regions,
+            "bottleneck_card": asdict(watchman_packet.bottleneck_card) if watchman_packet.bottleneck_card is not None else None,
+            "search_policy": asdict(watchman_packet.search_policy) if watchman_packet.search_policy is not None else None,
+            "branch_cards": [asdict(card) for card in watchman_packet.branch_cards[:4]],
+        }
+    return telemetry

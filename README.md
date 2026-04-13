@@ -160,6 +160,7 @@ Each command receives:
 
 - `TREE_PROMPT_PATH`
 - `TREE_PAYLOAD_PATH`
+- `TREE_TELEMETRY_PATH`
 - `TREE_OUTPUT_PATH`
 
 Expected JSON outputs:
@@ -169,6 +170,7 @@ Expected JSON outputs:
 - reflector: `polarity`, `summary`, `evidence`
 
 If the planner returns only the older minimal hypothesis fields, the adapter backfills the missing watchman branch identity fields automatically.
+`--beam-width`, `--max-rounds`, and `--children-per-expansion` are hard upper bounds; `watchman` can tighten the local branch budget inside those limits.
 
 Example:
 

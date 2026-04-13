@@ -97,13 +97,14 @@ class CommandAgentAdapterTests(unittest.TestCase):
 
             prompt = Path(os.environ["TREE_PROMPT_PATH"]).read_text(encoding="utf-8")
             payload = json.loads(Path(os.environ["TREE_PAYLOAD_PATH"]).read_text(encoding="utf-8"))
+            telemetry = json.loads(Path(os.environ["TREE_TELEMETRY_PATH"]).read_text(encoding="utf-8"))
             output_path = Path(os.environ["TREE_OUTPUT_PATH"])
             output_path.write_text(json.dumps({
                 "hypotheses": [{
                     "id": "h1",
                     "title": "Planner output",
                     "core_hypothesis": "planner hypothesis",
-                    "constraints_summary": prompt.splitlines()[0],
+                    "constraints_summary": telemetry["action"] + ":" + prompt.splitlines()[0],
                     "editable_path_hints": payload["task"]["editable_paths"],
                 }]
             }), encoding="utf-8")
@@ -124,9 +125,11 @@ class CommandAgentAdapterTests(unittest.TestCase):
             hypotheses[0].disallowed_directions,
             ["do not pivot into tensorization"],
         )
+        self.assertTrue(hypotheses[0].constraints_summary.startswith("propose:"))
         logs_dir = Path(self.parent.node_dir) / "agent" / "propose"
         self.assertTrue((logs_dir / "prompt.txt").exists())
         self.assertTrue((logs_dir / "payload.json").exists())
+        self.assertTrue((logs_dir / "telemetry.json").exists())
         self.assertTrue((logs_dir / "output.json").exists())
 
     def test_missing_commands_fall_back_to_watchman_and_completed_execution(self) -> None:

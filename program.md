@@ -99,10 +99,12 @@ Each command receives:
 
 - `TREE_PROMPT_PATH`
 - `TREE_PAYLOAD_PATH`
+- `TREE_TELEMETRY_PATH`
 - `TREE_OUTPUT_PATH`
 
 The planner should treat `watchman` as the frozen high-level decision layer.
 If it only returns the older minimal hypothesis schema, the adapter will backfill the missing family and guardrail fields from the matching watchman branch card.
+CLI beam, round, and child settings are upper bounds; `watchman` may suggest a tighter local budget for the current branch.
 
 Minimal example:
 

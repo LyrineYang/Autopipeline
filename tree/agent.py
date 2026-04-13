@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .prompts import (
+    build_agent_telemetry,
     build_execution_payload,
     build_execution_prompt,
     build_proposal_payload,
@@ -176,12 +177,20 @@ class CommandAgentAdapter(AgentAdapter):
 
         payload = build_proposal_payload(task_snapshot, root, parent, limit, watchman_packet)
         prompt = build_proposal_prompt(task_snapshot, root, parent, limit, watchman_packet)
+        telemetry = build_agent_telemetry(
+            action="propose",
+            task_snapshot=task_snapshot,
+            root=root,
+            parent=parent,
+            watchman_packet=watchman_packet,
+        )
         logs_dir = Path(parent.node_dir) / "agent" / "propose"
         raw = self._run_json_command(
             self.planner_command,
             cwd=self.repo_root,
             prompt=prompt,
             payload=payload,
+            telemetry=telemetry,
             logs_dir=logs_dir,
         )
         hypotheses_raw = raw if isinstance(raw, list) else raw.get("hypotheses")
@@ -207,12 +216,20 @@ class CommandAgentAdapter(AgentAdapter):
 
         payload = build_execution_payload(task_snapshot, root, parent, node)
         prompt = build_execution_prompt(task_snapshot, root, parent, node)
+        telemetry = build_agent_telemetry(
+            action="execute",
+            task_snapshot=task_snapshot,
+            root=root,
+            parent=parent,
+            node=node,
+        )
         logs_dir = Path(node.node_dir) / "agent" / "execute"
         raw = self._run_json_command(
             self.executor_command,
             cwd=Path(node.sandbox_path),
             prompt=prompt,
             payload=payload,
+            telemetry=telemetry,
             logs_dir=logs_dir,
         )
         if not isinstance(raw, dict):
@@ -240,12 +257,20 @@ class CommandAgentAdapter(AgentAdapter):
 
         payload = build_reflection_payload(task_snapshot, root, parent, node)
         prompt = build_reflection_prompt(task_snapshot, root, parent, node)
+        telemetry = build_agent_telemetry(
+            action="reflect",
+            task_snapshot=task_snapshot,
+            root=root,
+            parent=parent,
+            node=node,
+        )
         logs_dir = Path(node.node_dir) / "agent" / "reflect"
         raw = self._run_json_command(
             self.reflector_command,
             cwd=self.repo_root,
             prompt=prompt,
             payload=payload,
+            telemetry=telemetry,
             logs_dir=logs_dir,
         )
         if not isinstance(raw, dict):
@@ -273,21 +298,25 @@ class CommandAgentAdapter(AgentAdapter):
         cwd: Path,
         prompt: str,
         payload: dict[str, Any],
+        telemetry: dict[str, Any],
         logs_dir: Path,
     ) -> Any:
         logs_dir.mkdir(parents=True, exist_ok=True)
         prompt_path = logs_dir / "prompt.txt"
         payload_path = logs_dir / "payload.json"
+        telemetry_path = logs_dir / "telemetry.json"
         output_path = logs_dir / "output.json"
         stdout_path = logs_dir / "stdout.log"
         stderr_path = logs_dir / "stderr.log"
 
         prompt_path.write_text(prompt, encoding="utf-8")
         payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        telemetry_path.write_text(json.dumps(telemetry, indent=2), encoding="utf-8")
 
         env = os.environ.copy()
         env["TREE_PROMPT_PATH"] = str(prompt_path)
         env["TREE_PAYLOAD_PATH"] = str(payload_path)
+        env["TREE_TELEMETRY_PATH"] = str(telemetry_path)
         env["TREE_OUTPUT_PATH"] = str(output_path)
 
         result = subprocess.run(

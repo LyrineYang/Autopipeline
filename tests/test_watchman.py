@@ -68,10 +68,17 @@ class ContextTask(SeedOnlyTask):
             },
             "search_policy": {
                 "recommended_scope": "pipeline",
+                "scope_options": ["kernel", "region", "pipeline"],
                 "exploration_bias": "explore",
-                "suggested_children": 2,
-                "suggested_rounds": 3,
-                "suggested_beam_width": 2,
+                "branch_budget": {
+                    "children": 2,
+                    "rounds": 3,
+                    "beam_width": 2,
+                },
+                "resource_hint": {
+                    "tier": "generous",
+                    "notes": ["Preserve headroom while diagnosis is uncertain."],
+                },
                 "stop_conditions": ["stop when one family clearly wins"],
             },
             "branch_families": [
@@ -147,8 +154,12 @@ class WatchmanTests(unittest.TestCase):
         self.assertEqual(packet.bottleneck_card.response_families[0], "memory_hierarchy")
         self.assertIsNotNone(packet.search_policy)
         self.assertEqual(packet.search_policy.recommended_scope, "pipeline")
+        self.assertEqual(packet.search_policy.scope_options, ["kernel", "region", "pipeline"])
         self.assertEqual(packet.search_policy.exploration_bias, "explore")
-        self.assertEqual(packet.search_policy.suggested_children, 2)
+        self.assertEqual(packet.search_policy.branch_budget.children, 2)
+        self.assertEqual(packet.search_policy.branch_budget.beam_width, 2)
+        self.assertEqual(packet.search_policy.branch_budget.rounds, 3)
+        self.assertEqual(packet.search_policy.resource_hint.tier, "generous")
         self.assertIn("high-level decision", " ".join(packet.frozen_decisions).lower())
 
     def test_proposal_prompt_only_shows_focus_region_and_nearby_regions(self) -> None:

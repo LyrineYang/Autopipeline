@@ -53,13 +53,17 @@ class TreeSearchEngine:
 
         for round_index in range(self.config.max_rounds):
             parent_packets = self._build_parent_packets()
-            effective_round_limit = self._effective_round_limit(parent_packets)
-            if round_index >= effective_round_limit:
+            active_parent_packets = [
+                (parent, packet)
+                for parent, packet in parent_packets
+                if self._should_expand_parent(parent, packet)
+            ]
+            if not active_parent_packets:
                 break
 
             accepted_this_round: list[SearchNode] = []
             effective_beam_width = 1
-            for parent, packet in parent_packets:
+            for parent, packet in active_parent_packets:
                 effective_children = self._effective_children_limit(packet)
                 effective_beam_width = min(
                     self.config.beam_width,
@@ -81,6 +85,7 @@ class TreeSearchEngine:
                         "effective_children": effective_children,
                         "recommended_scope": packet.search_policy.recommended_scope if packet.search_policy else "",
                         "exploration_bias": packet.search_policy.exploration_bias if packet.search_policy else "",
+                        "resource_tier": packet.search_policy.resource_hint.tier if packet.search_policy else "",
                         "proposal_count": len(proposals),
                     },
                 )
@@ -116,7 +121,7 @@ class TreeSearchEngine:
                     "retained_previous_frontier": not bool(accepted_this_round),
                     "retained_node_ids": sorted(promoted),
                     "effective_beam_width": effective_beam_width,
-                    "effective_round_limit": effective_round_limit,
+                    "active_parent_ids": [parent.id for parent, _ in active_parent_packets],
                 },
             )
             self._persist_state()
@@ -343,31 +348,32 @@ class TreeSearchEngine:
                 self.root_memory,
                 parent,
                 self.config.children_per_expansion,
+                upper_bounds={
+                    "children_per_expansion": self.config.children_per_expansion,
+                    "beam_width": self.config.beam_width,
+                    "max_rounds": self.config.max_rounds,
+                },
             )
             packets.append((parent, packet))
         return packets
 
     def _effective_children_limit(self, packet: WatchmanPacket) -> int:
         policy = packet.search_policy
-        if policy is None or policy.suggested_children is None:
+        if policy is None or policy.branch_budget.children is None:
             return self.config.children_per_expansion
-        return max(1, min(self.config.children_per_expansion, policy.suggested_children))
+        return max(1, min(self.config.children_per_expansion, policy.branch_budget.children))
 
     def _effective_beam_width(self, packet: WatchmanPacket) -> int:
         policy = packet.search_policy
-        if policy is None or policy.suggested_beam_width is None:
+        if policy is None or policy.branch_budget.beam_width is None:
             return self.config.beam_width
-        return max(1, min(self.config.beam_width, policy.suggested_beam_width))
+        return max(1, min(self.config.beam_width, policy.branch_budget.beam_width))
 
-    def _effective_round_limit(self, parent_packets: list[tuple[SearchNode, WatchmanPacket]]) -> int:
-        suggestions = [
-            packet.search_policy.suggested_rounds
-            for _, packet in parent_packets
-            if packet.search_policy is not None and packet.search_policy.suggested_rounds is not None
-        ]
-        if not suggestions:
-            return self.config.max_rounds
-        return max(1, min(self.config.max_rounds, max(suggestions)))
+    def _should_expand_parent(self, parent: SearchNode, packet: WatchmanPacket) -> bool:
+        policy = packet.search_policy
+        if policy is None or policy.branch_budget.rounds is None:
+            return True
+        return parent.depth < min(self.config.max_rounds, policy.branch_budget.rounds)
 
 
 def _now_iso() -> str:

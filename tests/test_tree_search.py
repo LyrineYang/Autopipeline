@@ -96,7 +96,7 @@ class PolicyAwareFakeTask(FakeTask):
         )
         self.search_policy = search_policy
 
-    def watchman_context(self, parent, root, limit):
+    def watchman_context(self, parent, root, limit, *, upper_bounds=None):
         return {
             "branch_families": [
                 {
@@ -357,10 +357,13 @@ class TreeSearchEngineTests(unittest.TestCase):
             },
             search_policy={
                 "recommended_scope": "kernel",
+                "scope_options": ["kernel"],
                 "exploration_bias": "exploit",
-                "suggested_children": 1,
-                "suggested_beam_width": 1,
-                "suggested_rounds": 1,
+                "branch_budget": {
+                    "children": 1,
+                    "beam_width": 1,
+                    "rounds": 1,
+                },
             },
         )
 
@@ -379,6 +382,122 @@ class TreeSearchEngineTests(unittest.TestCase):
             self.assertEqual(result.best_node_id, "node-0002")
             self.assertEqual(engine.root_memory.rounds_completed, 1)
             self.assertNotIn("node-0003", engine.nodes)
+
+    def test_watchman_can_keep_beam_wider_than_children_cap(self) -> None:
+        first = Hypothesis(id="first", title="First", core_hypothesis="first-path", family="memory_hierarchy")
+        second = Hypothesis(id="second", title="Second", core_hypothesis="second-path", family="parallelization")
+        task = PolicyAwareFakeTask(
+            seed_hypotheses=[first, second],
+            score_by_hypothesis={
+                "Record the unmodified baseline candidate.": 1.0,
+                "first-path": 2.0,
+                "second-path": 3.0,
+            },
+            accepted_hypotheses={
+                "Record the unmodified baseline candidate.",
+                "first-path",
+                "second-path",
+            },
+            search_policy={
+                "recommended_scope": "kernel",
+                "scope_options": ["kernel"],
+                "exploration_bias": "balanced",
+                "branch_budget": {
+                    "children": 1,
+                    "beam_width": 2,
+                    "rounds": 2,
+                },
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [first, second]}),
+                config=SearchConfig(beam_width=3, max_rounds=2, children_per_expansion=1),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.total_nodes, 2)
+            self.assertEqual(engine.frontier_node_ids, ["node-0002"])
+            events = (run_dir / "tree_events.jsonl").read_text(encoding="utf-8")
+            self.assertIn('"effective_beam_width": 2', events)
+
+    def test_round_budget_is_honored_per_parent(self) -> None:
+        first = Hypothesis(id="first", title="First", core_hypothesis="first-path", family="memory_hierarchy")
+        second = Hypothesis(id="second", title="Second", core_hypothesis="second-path", family="parallelization")
+        followup = Hypothesis(id="follow", title="Follow", core_hypothesis="follow-path", family="memory_hierarchy")
+
+        class MixedPolicyTask(FakeTask):
+            def watchman_context(self, parent, root, limit, *, upper_bounds=None):
+                if parent.hypothesis.core_hypothesis == "Record the unmodified baseline candidate.":
+                    families = [first, second]
+                    budget = 3
+                    children = 2
+                else:
+                    families = [followup]
+                    budget = 1 if parent.hypothesis.core_hypothesis == "first-path" else 3
+                    children = 1
+                return {
+                    "branch_families": [
+                        {
+                            "id": item.id,
+                            "family": item.family,
+                            "title": item.title,
+                            "core_hypothesis": item.core_hypothesis,
+                        }
+                        for item in families[:limit]
+                    ],
+                    "search_policy": {
+                        "recommended_scope": "kernel",
+                        "scope_options": ["kernel"],
+                        "exploration_bias": "balanced",
+                        "branch_budget": {
+                            "children": children,
+                            "beam_width": 2,
+                            "rounds": budget,
+                        },
+                    },
+                }
+
+        task = MixedPolicyTask(
+            seed_hypotheses=[first, second],
+            score_by_hypothesis={
+                "Record the unmodified baseline candidate.": 1.0,
+                "first-path": 2.0,
+                "second-path": 3.0,
+                "follow-path": 4.0,
+            },
+            accepted_hypotheses={
+                "Record the unmodified baseline candidate.",
+                "first-path",
+                "second-path",
+                "follow-path",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(
+                    proposals_by_parent={
+                        "node-0001": [first, second],
+                        "node-0002": [followup],
+                        "node-0003": [followup],
+                    }
+                ),
+                config=SearchConfig(beam_width=2, max_rounds=3, children_per_expansion=2),
+                run_dir=run_dir,
+            )
+
+            engine.run()
+
+            self.assertIn("node-0004", engine.nodes)
+            self.assertNotIn("node-0005", engine.nodes)
 
 
 if __name__ == "__main__":

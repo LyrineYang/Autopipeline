@@ -3,6 +3,7 @@
 from .agent import AgentAdapter, CommandAgentAdapter, NoOpAgentAdapter
 from .search import TreeSearchEngine
 from .types import (
+    BranchBudgetHint,
     BottleneckCard,
     EvaluationResult,
     ExecutionResult,
@@ -10,8 +11,10 @@ from .types import (
     Insight,
     RegionCard,
     RegionGraph,
+    ResourceHint,
     RootMemory,
     SearchConfig,
+    SearchPolicyHint,
     SearchNode,
     SearchResult,
     TaskSnapshot,
@@ -20,6 +23,7 @@ from .watchman import Watchman, WatchmanPacket
 
 __all__ = [
     "AgentAdapter",
+    "BranchBudgetHint",
     "BottleneckCard",
     "CommandAgentAdapter",
     "EvaluationResult",
@@ -29,8 +33,10 @@ __all__ = [
     "NoOpAgentAdapter",
     "RegionCard",
     "RegionGraph",
+    "ResourceHint",
     "RootMemory",
     "SearchConfig",
+    "SearchPolicyHint",
     "SearchNode",
     "SearchResult",
     "TaskSnapshot",

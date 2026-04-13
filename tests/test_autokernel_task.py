@@ -200,9 +200,12 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertIn("memory_bandwidth_pressure", context["bottleneck_card"]["diagnoses"])
         self.assertIn("memory_hierarchy", context["bottleneck_card"]["response_families"])
         self.assertEqual(context["search_policy"]["recommended_scope"], "kernel")
+        self.assertEqual(context["search_policy"]["scope_options"], ["kernel"])
         self.assertEqual(context["search_policy"]["exploration_bias"], "exploit")
-        self.assertEqual(context["search_policy"]["suggested_children"], 1)
-        self.assertEqual(context["search_policy"]["suggested_beam_width"], 1)
+        self.assertEqual(context["search_policy"]["branch_budget"]["children"], 1)
+        self.assertEqual(context["search_policy"]["branch_budget"]["beam_width"], 1)
+        self.assertEqual(context["search_policy"]["branch_budget"]["rounds"], 1)
+        self.assertEqual(context["search_policy"]["resource_hint"]["tier"], "lean")
         self.assertEqual(len(context["branch_families"]), 3)
         self.assertEqual(len({entry["family"] for entry in context["branch_families"]}), 3)
 
@@ -247,7 +250,9 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertIn("kernel_boundary_overhead", context["bottleneck_card"]["diagnoses"])
         families = [entry["family"] for entry in context["branch_families"]]
         self.assertEqual(context["search_policy"]["recommended_scope"], "pipeline")
+        self.assertEqual(context["search_policy"]["scope_options"], ["kernel", "region", "pipeline"])
         self.assertEqual(context["search_policy"]["exploration_bias"], "balanced")
+        self.assertEqual(context["search_policy"]["resource_hint"]["tier"], "balanced")
         self.assertNotIn("fusion", families)
         self.assertNotIn("launch_consolidation", families)
         self.assertNotIn("instruction_selection", families)
@@ -286,6 +291,41 @@ class AutoKernelTaskTests(unittest.TestCase):
 
         self.assertIn("launch_overhead", context["bottleneck_card"]["diagnoses"])
         self.assertIn("kernel_boundary_overhead", context["bottleneck_card"]["diagnoses"])
+
+    def test_watchman_context_decouples_beam_budget_from_child_limit(self) -> None:
+        parent = SearchNode(
+            id="node-0001",
+            parent_id=None,
+            depth=0,
+            hypothesis=Hypothesis(id="baseline", title="Baseline", core_hypothesis="baseline"),
+            node_dir=str(self.repo_root / "node-0001"),
+        )
+        parent.evaluation_result = type("Eval", (), {
+            "accepted": False,
+            "score": 0.8,
+            "summary": "baseline",
+            "metrics": {
+                "bottleneck": "unknown",
+                "speedup_vs_pytorch": 0.8,
+                "score_metric": "speedup_vs_pytorch",
+                "score_value": 0.8,
+            },
+        })()
+
+        with mock.patch.object(self.task, "_hardware_context", return_value={"gpu_name": "H100"}):
+            context = self.task.watchman_context(
+                parent,
+                RootMemory(
+                    objective="test",
+                    negative_insights=["memory branch regressed", "parallelization branch regressed"],
+                ),
+                1,
+                upper_bounds={"beam_width": 3, "max_rounds": 3},
+            )
+
+        self.assertEqual(context["search_policy"]["exploration_bias"], "explore")
+        self.assertEqual(context["search_policy"]["branch_budget"]["children"], 1)
+        self.assertEqual(context["search_policy"]["branch_budget"]["beam_width"], 2)
 
     def test_family_score_penalizes_matching_negative_insights(self) -> None:
         benchmark_context = {"metrics": {"bottleneck": "compute"}}
