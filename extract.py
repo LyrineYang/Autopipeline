@@ -2,7 +2,7 @@
 """
 AutoKernel Kernel Extractor -- Generate baseline kernels from profiling results.
 
-Reads workspace/pipeline_profile.json when present and copies lightweight pipeline hints into each extracted kernel header.
+Reads pipeline_profile.json from the same directory as the selected profile report when present and copies lightweight pipeline hints into each extracted kernel header.
 
 Usage:
     uv run extract.py                          # extract from workspace/profile_report.json
@@ -19,7 +19,10 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from pipeline_profile import pipeline_profile_path_for_report
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -30,7 +33,6 @@ WORKSPACE_DIR = os.path.join(SCRIPT_DIR, "workspace")
 KERNELS_DIR = os.path.join(SCRIPT_DIR, "kernels")
 DEFAULT_REPORT_PATH = os.path.join(WORKSPACE_DIR, "profile_report.json")
 OPTIMIZATION_PLAN_PATH = os.path.join(WORKSPACE_DIR, "optimization_plan.json")
-PIPELINE_PROFILE_PATH = os.path.join(WORKSPACE_DIR, "pipeline_profile.json")
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +525,8 @@ def extract_kernels(
 
     # -- Get supported kernels --
     supported = get_supported_kernels(report)
-    pipeline_profile = load_pipeline_profile(PIPELINE_PROFILE_PATH)
+    pipeline_profile_path = str(pipeline_profile_path_for_report(Path(report_path)))
+    pipeline_profile = load_pipeline_profile(pipeline_profile_path)
     if not supported:
         print("ERROR: No supported kernels found in profile report.")
         print("       Ensure the profiler marks kernels with autokernel_supported=True.")

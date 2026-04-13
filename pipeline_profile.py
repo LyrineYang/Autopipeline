@@ -23,6 +23,10 @@ def save_pipeline_profile(profile: dict[str, Any], path: Path) -> None:
         json.dump(profile, handle, indent=2)
 
 
+def pipeline_profile_path_for_report(report_path: Path) -> Path:
+    return report_path.resolve().with_name("pipeline_profile.json")
+
+
 def _shape_key(kernel: dict[str, Any]) -> str:
     return str(kernel.get("shape_info") or kernel.get("shape") or "").strip()
 
@@ -140,9 +144,9 @@ def _region_summary(region: dict[str, Any]) -> str:
 def build_pipeline_profile(report: dict[str, Any], *, max_kernels: int = 12) -> dict[str, Any]:
     top_kernels = report.get("top_kernels", [])
     supported = [
-        kernel for kernel in top_kernels[:max_kernels]
+        kernel for kernel in top_kernels
         if isinstance(kernel, dict) and kernel.get("autokernel_supported", False)
-    ]
+    ][:max_kernels]
     if not supported:
         return {
             "model": report.get("model"),
@@ -201,7 +205,7 @@ def build_pipeline_profile(report: dict[str, Any], *, max_kernels: int = 12) -> 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a lightweight pipeline profile from profile_report.json.")
     parser.add_argument("--report", default=str(DEFAULT_REPORT_PATH), help="Path to profile_report.json")
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT_PATH), help="Path to write pipeline_profile.json")
+    parser.add_argument("--output", default=None, help="Path to write pipeline_profile.json")
     parser.add_argument("--max-kernels", type=int, default=12, help="Maximum number of top kernels to consider")
     return parser.parse_args()
 
@@ -209,7 +213,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     report_path = Path(args.report)
-    output_path = Path(args.output)
+    output_path = Path(args.output) if args.output else pipeline_profile_path_for_report(report_path)
     report = load_profile_report(report_path)
     pipeline_profile = build_pipeline_profile(report, max_kernels=args.max_kernels)
     save_pipeline_profile(pipeline_profile, output_path)

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from extract import generate_kernel_file
-from pipeline_profile import build_pipeline_profile
+from pipeline_profile import build_pipeline_profile, pipeline_profile_path_for_report
 
 
 class PipelineProfileTests(unittest.TestCase):
@@ -84,6 +85,29 @@ class PipelineProfileTests(unittest.TestCase):
         self.assertIn("Upstream regions: qkv projection", content)
         self.assertIn("Downstream regions: attention output", content)
         self.assertIn("Profile bottlenecks: launch, boundary", content)
+
+    def test_build_pipeline_profile_filters_supported_before_cap(self) -> None:
+        report = {
+            "model": "demo-model",
+            "gpu_name": "H100",
+            "top_kernels": [
+                {"rank": 1, "op_type": "unknown", "autokernel_supported": False},
+                {"rank": 2, "op_type": "unknown", "autokernel_supported": False},
+                {"rank": 3, "name": "aten::mm", "op_type": "matmul", "shape_info": "M=256, N=256, K=256", "pct_total": 7.0, "roofline": "compute-bound", "autokernel_supported": True},
+            ],
+        }
+
+        profile = build_pipeline_profile(report, max_kernels=1)
+
+        self.assertIn("3", profile["kernel_hints"])
+        self.assertEqual(profile["kernel_hints"]["3"]["pipeline_region_label"], "matmul region")
+
+    def test_pipeline_profile_path_tracks_selected_report_directory(self) -> None:
+        workspace = Path(self.id().replace(".", "_"))
+        report_path = Path("/tmp") / workspace / "custom_report.json"
+        pipeline_path = pipeline_profile_path_for_report(report_path)
+
+        self.assertEqual(pipeline_path, report_path.resolve().with_name("pipeline_profile.json"))
 
 
 if __name__ == "__main__":

@@ -49,8 +49,8 @@ uv run extract.py --top 5
 uv run bench.py
 ```
 
-`profile.py` now writes both `workspace/profile_report.json` and `workspace/pipeline_profile.json`.  
-`extract.py` reads the lightweight pipeline profile and copies those hints into each extracted kernel header so the tree adapter can use them later.
+`profile.py` now writes `pipeline_profile.json` next to the selected profile report. By default that means both files land in `workspace/`.  
+`extract.py` reads that sibling pipeline profile and copies those hints into each extracted kernel header so the tree adapter can use them later.
 
 ## Running the Agent
 

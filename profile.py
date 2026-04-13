@@ -7,7 +7,7 @@ Usage:
     uv run profile.py --model models/gpt2.py --class-name GPT2 --input-shape 1,1024
     uv run profile.py --module transformers --class-name AutoModelForCausalLM --pretrained meta-llama/Llama-2-7b-hf --input-shape 1,2048
 
-Output: profile_report.json and pipeline_profile.json in workspace/ directory
+Output: profile_report.json and sibling pipeline_profile.json (defaults to workspace/ directory)
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from pipeline_profile import build_pipeline_profile, save_pipeline_profile
+from pipeline_profile import build_pipeline_profile, pipeline_profile_path_for_report, save_pipeline_profile
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1092,10 +1092,10 @@ def main() -> int:
 
     print(f"Profile saved to {output_path}")
 
-    pipeline_output_path = os.path.join(WORKSPACE_DIR, "pipeline_profile.json")
+    pipeline_output_path = pipeline_profile_path_for_report(Path(output_path))
     try:
         pipeline_profile = build_pipeline_profile(report)
-        save_pipeline_profile(pipeline_profile, Path(pipeline_output_path))
+        save_pipeline_profile(pipeline_profile, pipeline_output_path)
         print(f"Pipeline profile saved to {pipeline_output_path}")
     except Exception as e:
         print(f"  WARNING: Could not build pipeline profile: {e}")
