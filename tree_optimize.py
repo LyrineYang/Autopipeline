@@ -62,7 +62,6 @@ def main() -> None:
     )
     agent = CommandAgentAdapter(
         repo_root=repo_root,
-        planner_command=args.planner_command,
         executor_command=args.executor_command,
         reflector_command=args.reflector_command,
     )

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tree.autokernel import AutoKernelTask, _family_score, parse_bench_output, parse_verify_output
+from tree.autokernel import AutoKernelTask, parse_bench_output, parse_verify_output
 from tree.types import Hypothesis, RootMemory, SearchNode
 
 
@@ -156,7 +156,7 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertEqual(verify["correctness"], "PASS")
         self.assertEqual(verify["end_to_end_speedup"], 1.1)
 
-    def test_watchman_context_exposes_profile_hardware_and_branch_families(self) -> None:
+    def test_watchman_context_exposes_facts_rules_and_frozen_decisions(self) -> None:
         parent = SearchNode(
             id="node-0001",
             parent_id=None,
@@ -164,19 +164,27 @@ class AutoKernelTaskTests(unittest.TestCase):
             hypothesis=Hypothesis(id="baseline", title="Baseline", core_hypothesis="baseline"),
             node_dir=str(self.repo_root / "node-0001"),
         )
-        parent.evaluation_result = type("Eval", (), {
-            "accepted": True,
-            "score": 1.4,
-            "summary": "baseline",
-            "metrics": {
-                "bottleneck": "memory",
-                "speedup_vs_pytorch": 1.4,
-                "score_metric": "speedup_vs_pytorch",
-                "score_value": 1.4,
+        parent.evaluation_result = type(
+            "Eval",
+            (),
+            {
+                "accepted": True,
+                "score": 1.4,
+                "summary": "baseline",
+                "metrics": {
+                    "bottleneck": "memory",
+                    "speedup_vs_pytorch": 1.4,
+                    "score_metric": "speedup_vs_pytorch",
+                    "score_value": 1.4,
+                },
             },
-        })()
+        )()
 
-        with mock.patch.object(self.task, "_hardware_context", return_value={"gpu_name": "H100", "compute_capability": "9.0"}):
+        with mock.patch.object(
+            self.task,
+            "_hardware_context",
+            return_value={"gpu_name": "H100", "compute_capability": "9.0"},
+        ):
             context = self.task.watchman_context(
                 parent,
                 RootMemory(
@@ -185,6 +193,7 @@ class AutoKernelTaskTests(unittest.TestCase):
                     negative_insights=["instruction selection branch regressed"],
                 ),
                 3,
+                upper_bounds={"beam_width": 3, "children_per_expansion": 2, "max_rounds": 4},
             )
 
         self.assertEqual(context["static_prior"]["kernel_type"], "matmul")
@@ -193,23 +202,15 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertEqual(context["benchmark_context"]["metrics"]["bottleneck"], "memory")
         self.assertEqual(context["region_graph"]["focus_region_id"], "current-kernel")
         self.assertEqual(context["region_graph"]["regions"][0]["label"], "kernel_matmul_7.py")
-        self.assertIn("scope=kernel", context["region_graph"]["regions"][0]["signals"])
-        self.assertIn("local_bottleneck=memory", context["region_graph"]["regions"][0]["signals"])
-        self.assertEqual(context["bottleneck_card"]["scope"], "kernel")
-        self.assertEqual(context["bottleneck_card"]["target"], "kernel_matmul_7.py")
-        self.assertIn("memory_bandwidth_pressure", context["bottleneck_card"]["diagnoses"])
-        self.assertIn("memory_hierarchy", context["bottleneck_card"]["response_families"])
-        self.assertEqual(context["search_policy"]["recommended_scope"], "kernel")
-        self.assertEqual(context["search_policy"]["scope_options"], ["kernel"])
-        self.assertEqual(context["search_policy"]["exploration_bias"], "exploit")
-        self.assertEqual(context["search_policy"]["branch_budget"]["children"], 1)
-        self.assertEqual(context["search_policy"]["branch_budget"]["beam_width"], 1)
-        self.assertEqual(context["search_policy"]["branch_budget"]["rounds"], 1)
-        self.assertEqual(context["search_policy"]["resource_hint"]["tier"], "lean")
-        self.assertEqual(len(context["branch_families"]), 3)
-        self.assertEqual(len({entry["family"] for entry in context["branch_families"]}), 3)
+        self.assertIn("scope=kernel", context["symptoms"])
+        self.assertIn("local_bottleneck=memory", context["symptoms"])
+        self.assertEqual(context["profile_hints"], [])
+        self.assertEqual(context["planner_rules"]["allowed_scopes"], ["kernel"])
+        self.assertIn("memory_hierarchy", context["planner_rules"]["allowed_families"])
+        self.assertEqual(context["planner_rules"]["resource_ceiling"]["beam_width"], 3)
+        self.assertIn("single-kernel", " ".join(context["frozen_decisions"]).lower())
 
-    def test_watchman_context_expands_to_pipeline_regions_when_profile_prior_has_scope(self) -> None:
+    def test_watchman_context_expands_region_graph_when_profile_prior_has_scope(self) -> None:
         self.task.profile_prior.update(
             {
                 "optimization_scope": "pipeline",
@@ -226,17 +227,21 @@ class AutoKernelTaskTests(unittest.TestCase):
             hypothesis=Hypothesis(id="baseline", title="Baseline", core_hypothesis="baseline"),
             node_dir=str(self.repo_root / "node-0001"),
         )
-        parent.evaluation_result = type("Eval", (), {
-            "accepted": True,
-            "score": 1.0,
-            "summary": "baseline",
-            "metrics": {
-                "bottleneck": "memory",
-                "speedup_vs_pytorch": 1.0,
-                "score_metric": "speedup_vs_pytorch",
-                "score_value": 1.0,
+        parent.evaluation_result = type(
+            "Eval",
+            (),
+            {
+                "accepted": True,
+                "score": 1.0,
+                "summary": "baseline",
+                "metrics": {
+                    "bottleneck": "memory",
+                    "speedup_vs_pytorch": 1.0,
+                    "score_metric": "speedup_vs_pytorch",
+                    "score_value": 1.0,
+                },
             },
-        })()
+        )()
 
         with mock.patch.object(self.task, "_hardware_context", return_value={"gpu_name": "H100"}):
             context = self.task.watchman_context(parent, RootMemory(objective="test"), 4)
@@ -244,22 +249,14 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertEqual(context["region_graph"]["regions"][0]["label"], "attention block")
         self.assertEqual(len(context["region_graph"]["regions"]), 3)
         self.assertIn("upstream-1", context["region_graph"]["regions"][0]["adjacent"])
-        self.assertEqual(context["bottleneck_card"]["scope"], "pipeline")
-        self.assertEqual(context["bottleneck_card"]["target"], "attention block")
-        self.assertIn("launch_overhead", context["bottleneck_card"]["diagnoses"])
-        self.assertIn("kernel_boundary_overhead", context["bottleneck_card"]["diagnoses"])
-        families = [entry["family"] for entry in context["branch_families"]]
-        self.assertEqual(context["search_policy"]["recommended_scope"], "pipeline")
-        self.assertEqual(context["search_policy"]["scope_options"], ["kernel", "region", "pipeline"])
-        self.assertEqual(context["search_policy"]["exploration_bias"], "balanced")
-        self.assertEqual(context["search_policy"]["resource_hint"]["tier"], "balanced")
-        self.assertNotIn("fusion", families)
-        self.assertNotIn("launch_consolidation", families)
-        self.assertNotIn("instruction_selection", families)
-        self.assertIn("occupancy_launch", families)
-        self.assertIn("parallelization", families)
+        self.assertIn("launch_overhead", context["profile_hints"])
+        self.assertIn("kernel_boundary_overhead", context["profile_hints"])
+        self.assertEqual(context["planner_rules"]["allowed_scopes"], ["kernel"])
+        self.assertNotIn("fusion", context["planner_rules"]["allowed_families"])
+        self.assertNotIn("launch_consolidation", context["planner_rules"]["allowed_families"])
+        self.assertIn("parallelization", context["planner_rules"]["allowed_families"])
 
-    def test_profile_bottleneck_accepts_canonical_diagnosis_names(self) -> None:
+    def test_profile_bottleneck_hints_are_canonicalized(self) -> None:
         self.task.profile_prior.update(
             {
                 "optimization_scope": "pipeline",
@@ -274,25 +271,14 @@ class AutoKernelTaskTests(unittest.TestCase):
             hypothesis=Hypothesis(id="baseline", title="Baseline", core_hypothesis="baseline"),
             node_dir=str(self.repo_root / "node-0001"),
         )
-        parent.evaluation_result = type("Eval", (), {
-            "accepted": True,
-            "score": 1.0,
-            "summary": "baseline",
-            "metrics": {
-                "bottleneck": "unknown",
-                "speedup_vs_pytorch": 1.0,
-                "score_metric": "speedup_vs_pytorch",
-                "score_value": 1.0,
-            },
-        })()
 
         with mock.patch.object(self.task, "_hardware_context", return_value={"gpu_name": "H100"}):
             context = self.task.watchman_context(parent, RootMemory(objective="test"), 3)
 
-        self.assertIn("launch_overhead", context["bottleneck_card"]["diagnoses"])
-        self.assertIn("kernel_boundary_overhead", context["bottleneck_card"]["diagnoses"])
+        self.assertIn("launch_overhead", context["profile_hints"])
+        self.assertIn("kernel_boundary_overhead", context["profile_hints"])
 
-    def test_watchman_context_decouples_beam_budget_from_child_limit(self) -> None:
+    def test_watchman_context_preserves_resource_ceiling(self) -> None:
         parent = SearchNode(
             id="node-0001",
             parent_id=None,
@@ -300,56 +286,18 @@ class AutoKernelTaskTests(unittest.TestCase):
             hypothesis=Hypothesis(id="baseline", title="Baseline", core_hypothesis="baseline"),
             node_dir=str(self.repo_root / "node-0001"),
         )
-        parent.evaluation_result = type("Eval", (), {
-            "accepted": False,
-            "score": 0.8,
-            "summary": "baseline",
-            "metrics": {
-                "bottleneck": "unknown",
-                "speedup_vs_pytorch": 0.8,
-                "score_metric": "speedup_vs_pytorch",
-                "score_value": 0.8,
-            },
-        })()
 
         with mock.patch.object(self.task, "_hardware_context", return_value={"gpu_name": "H100"}):
             context = self.task.watchman_context(
                 parent,
-                RootMemory(
-                    objective="test",
-                    negative_insights=["memory branch regressed", "parallelization branch regressed"],
-                ),
+                RootMemory(objective="test"),
                 1,
-                upper_bounds={"beam_width": 3, "max_rounds": 3},
+                upper_bounds={"beam_width": 3, "children_per_expansion": 1, "max_rounds": 3},
             )
 
-        self.assertEqual(context["search_policy"]["exploration_bias"], "explore")
-        self.assertEqual(context["search_policy"]["branch_budget"]["children"], 1)
-        self.assertEqual(context["search_policy"]["branch_budget"]["beam_width"], 2)
-
-    def test_family_score_penalizes_matching_negative_insights(self) -> None:
-        benchmark_context = {"metrics": {"bottleneck": "compute"}}
-        baseline = _family_score(
-            "instruction_selection",
-            kernel_type="matmul",
-            benchmark_context=benchmark_context,
-            history_context={},
-        )
-        improved = _family_score(
-            "instruction_selection",
-            kernel_type="matmul",
-            benchmark_context=benchmark_context,
-            history_context={"positive_insights": ["instruction selection branch improved"]},
-        )
-        regressed = _family_score(
-            "instruction_selection",
-            kernel_type="matmul",
-            benchmark_context=benchmark_context,
-            history_context={"negative_insights": ["instruction selection branch regressed"]},
-        )
-
-        self.assertGreater(improved, baseline)
-        self.assertLess(regressed, baseline)
+        self.assertEqual(context["planner_rules"]["resource_ceiling"]["beam_width"], 3)
+        self.assertEqual(context["planner_rules"]["resource_ceiling"]["children_per_expansion"], 1)
+        self.assertEqual(context["planner_rules"]["resource_ceiling"]["max_rounds"], 3)
 
 
 if __name__ == "__main__":

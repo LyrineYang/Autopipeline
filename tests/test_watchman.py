@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import shlex
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
-from tree.prompts import build_proposal_prompt
+from tree.prompts import build_watchman_prompt
 from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 from tree.watchman import Watchman
 
@@ -22,9 +25,9 @@ class SeedOnlyTask:
 
 
 class ContextTask(SeedOnlyTask):
-    def watchman_context(self, parent, root, limit):
+    def watchman_context(self, parent, root, limit, *, upper_bounds=None):
         return {
-            "static_prior": {"kernel_type": "matmul"},
+            "static_prior": {"kernel_type": "matmul", "optimization_scope": "kernel"},
             "hardware_context": {"gpu_name": "H100"},
             "benchmark_context": {"metrics": {"bottleneck": "memory"}},
             "history_context": {"positive_insights": ["memory branch improved"]},
@@ -34,7 +37,7 @@ class ContextTask(SeedOnlyTask):
                     {
                         "id": "current-kernel",
                         "label": "kernel.py",
-                        "scope": "region",
+                        "scope": "kernel",
                         "summary": "Hot matmul region.",
                         "signals": ["local_bottleneck=memory"],
                         "adjacent": ["upstream-1", "downstream-1"],
@@ -54,53 +57,19 @@ class ContextTask(SeedOnlyTask):
                         "summary": "Consumes the hot region output.",
                         "signals": ["launch_overhead"],
                         "adjacent": ["current-kernel"],
-                    }
+                    },
                 ],
             },
-            "bottleneck_card": {
-                "scope": "pipeline",
-                "target": "kernel.py",
-                "symptoms": ["local_bottleneck=memory"],
-                "diagnoses": ["memory_bandwidth_pressure", "kernel_boundary_overhead"],
-                "response_families": ["memory_hierarchy", "fusion"],
+            "symptoms": ["local_bottleneck=memory", "gpu=H100"],
+            "profile_hints": ["memory_bandwidth_pressure"],
+            "problem_summary": "Current target is memory-bound and stays inside one kernel.",
+            "planner_rules": {
+                "allowed_scopes": ["kernel"],
+                "allowed_families": ["memory_hierarchy", "parallelization"],
+                "editable_paths": ["kernel.py"],
                 "avoid_families": ["instruction_selection"],
-                "rationale": "Local evidence points to memory pressure first.",
             },
-            "search_policy": {
-                "recommended_scope": "pipeline",
-                "scope_options": ["kernel", "region", "pipeline"],
-                "exploration_bias": "explore",
-                "branch_budget": {
-                    "children": 2,
-                    "rounds": 3,
-                    "beam_width": 2,
-                },
-                "resource_hint": {
-                    "tier": "generous",
-                    "notes": ["Preserve headroom while diagnosis is uncertain."],
-                },
-                "stop_conditions": ["stop when one family clearly wins"],
-            },
-            "branch_families": [
-                {
-                    "id": "memory",
-                    "family": "memory_hierarchy",
-                    "title": "Memory branch",
-                    "core_hypothesis": "Improve memory traffic",
-                    "constraints_summary": "Memory changes only",
-                    "rationale": "Parent is memory-bound",
-                    "target_signals": ["bandwidth_gb_s"],
-                    "supporting_evidence": ["bottleneck=memory"],
-                    "disallowed_directions": ["Do not switch to tensorization."],
-                },
-                {
-                    "id": "parallel",
-                    "family": "parallelization",
-                    "title": "Parallel branch",
-                    "core_hypothesis": "Retune tiles",
-                    "constraints_summary": "Parallelization only",
-                },
-            ],
+            "frozen_decisions": ["Stay inside kernel.py and freeze the high-level branch identity."],
         }
 
 
@@ -121,6 +90,7 @@ class WatchmanTests(unittest.TestCase):
                 summary="baseline",
             ),
         )
+        Path(self.parent.node_dir).mkdir(parents=True, exist_ok=True)
         self.snapshot = TaskSnapshot(
             task_type="fake",
             objective="test watchman",
@@ -136,39 +106,124 @@ class WatchmanTests(unittest.TestCase):
 
         self.assertEqual(len(packet.branch_cards), 1)
         self.assertEqual(packet.branch_cards[0].core_hypothesis, "seed hypothesis")
+        self.assertEqual(packet.branch_cards[0].family, "seed_family")
         self.assertEqual(packet.static_prior["source"], "seed_hypotheses")
+        self.assertIsNotNone(packet.search_policy)
 
-    def test_builds_branch_cards_from_watchman_context(self) -> None:
-        packet = Watchman().build_packet(ContextTask(), self.snapshot, self.root, self.parent, 2)
+    def test_builds_packet_from_task_facts(self) -> None:
+        packet = Watchman().build_packet(
+            ContextTask(),
+            self.snapshot,
+            self.root,
+            self.parent,
+            2,
+            upper_bounds={"beam_width": 3, "children_per_expansion": 2, "max_rounds": 4},
+        )
 
-        self.assertEqual(len(packet.branch_cards), 2)
-        self.assertEqual(packet.branch_cards[0].family, "memory_hierarchy")
-        self.assertEqual(packet.branch_cards[0].target_signals, ["bandwidth_gb_s"])
+        self.assertEqual(len(packet.branch_cards), 1)
+        self.assertEqual(packet.branch_cards[0].family, "seed_family")
         self.assertIsNotNone(packet.region_graph)
         self.assertEqual(packet.region_graph.focus_region_id, "current-kernel")
         self.assertEqual(len(packet.region_graph.regions), 3)
-        self.assertEqual(packet.region_graph.regions[0].label, "kernel.py")
         self.assertIsNotNone(packet.bottleneck_card)
-        self.assertEqual(packet.bottleneck_card.scope, "pipeline")
-        self.assertEqual(packet.bottleneck_card.diagnoses, ["memory_bandwidth_pressure", "kernel_boundary_overhead"])
-        self.assertEqual(packet.bottleneck_card.response_families[0], "memory_hierarchy")
+        self.assertEqual(packet.bottleneck_card.diagnoses, ["memory_bandwidth_pressure"])
+        self.assertEqual(packet.bottleneck_card.response_families, ["seed_family"])
         self.assertIsNotNone(packet.search_policy)
-        self.assertEqual(packet.search_policy.recommended_scope, "pipeline")
-        self.assertEqual(packet.search_policy.scope_options, ["kernel", "region", "pipeline"])
-        self.assertEqual(packet.search_policy.exploration_bias, "explore")
-        self.assertEqual(packet.search_policy.branch_budget.children, 2)
+        self.assertEqual(packet.search_policy.recommended_scope, "kernel")
+        self.assertEqual(packet.search_policy.scope_options, ["kernel"])
+        self.assertEqual(packet.search_policy.branch_budget.children, 1)
+        self.assertEqual(packet.search_policy.branch_budget.beam_width, 3)
+        self.assertIn("high-level branch identity", " ".join(packet.frozen_decisions).lower())
+
+    def test_planner_command_can_override_watchman_packet(self) -> None:
+        script = Path(self.tempdir.name) / "planner.py"
+        script.write_text(
+            textwrap.dedent(
+                """
+                import json
+                import os
+                from pathlib import Path
+
+                payload = json.loads(Path(os.environ["TREE_PAYLOAD_PATH"]).read_text(encoding="utf-8"))
+                telemetry = json.loads(Path(os.environ["TREE_TELEMETRY_PATH"]).read_text(encoding="utf-8"))
+                prompt = Path(os.environ["TREE_PROMPT_PATH"]).read_text(encoding="utf-8")
+                Path(os.environ["TREE_OUTPUT_PATH"]).write_text(
+                    json.dumps(
+                        {
+                            "bottleneck_card": {
+                                "scope": "kernel",
+                                "target": payload["task"]["target_path"],
+                                "symptoms": ["local_bottleneck=memory"],
+                                "diagnoses": ["memory_bandwidth_pressure"],
+                                "response_families": ["memory_hierarchy"],
+                                "avoid_families": [],
+                                "rationale": telemetry["facts"]["problem_summary"],
+                            },
+                            "search_policy": {
+                                "recommended_scope": "kernel",
+                                "scope_options": ["kernel"],
+                                "exploration_bias": "exploit",
+                                "branch_budget": {"children": 1, "beam_width": 2, "rounds": 1},
+                                "resource_hint": {"tier": "lean", "notes": [prompt.splitlines()[0]]},
+                                "stop_conditions": ["stop after one accepted improvement"],
+                            },
+                            "branch_cards": [
+                                {
+                                    "id": "planner-1",
+                                    "title": "Planner branch",
+                                    "core_hypothesis": "planner hypothesis",
+                                    "constraints_summary": "keep it local",
+                                    "editable_path_hints": ["kernel.py"],
+                                    "family": "memory_hierarchy",
+                                    "rationale": "planner chose memory hierarchy",
+                                    "target_signals": ["bandwidth_gb_s"],
+                                    "supporting_evidence": ["bottleneck=memory"],
+                                    "disallowed_directions": ["do not pivot to tensorization"],
+                                }
+                            ],
+                            "frozen_decisions": ["freeze to one memory branch"],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        packet = Watchman(
+            planner_command=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+        ).build_packet(
+            ContextTask(),
+            self.snapshot,
+            self.root,
+            self.parent,
+            2,
+            upper_bounds={"beam_width": 3, "children_per_expansion": 2, "max_rounds": 4},
+        )
+
+        self.assertEqual(packet.branch_cards[0].core_hypothesis, "planner hypothesis")
         self.assertEqual(packet.search_policy.branch_budget.beam_width, 2)
-        self.assertEqual(packet.search_policy.branch_budget.rounds, 3)
-        self.assertEqual(packet.search_policy.resource_hint.tier, "generous")
-        self.assertIn("high-level decision", " ".join(packet.frozen_decisions).lower())
+        self.assertEqual(packet.frozen_decisions, ["freeze to one memory branch"])
+        logs_dir = Path(self.parent.node_dir) / "agent" / "watchman"
+        self.assertTrue((logs_dir / "prompt.txt").exists())
+        self.assertTrue((logs_dir / "payload.json").exists())
+        self.assertTrue((logs_dir / "telemetry.json").exists())
+        self.assertTrue((logs_dir / "output.json").exists())
 
-    def test_proposal_prompt_only_shows_focus_region_and_nearby_regions(self) -> None:
-        packet = Watchman().build_packet(ContextTask(), self.snapshot, self.root, self.parent, 2)
+    def test_watchman_prompt_summarizes_problem_and_rules(self) -> None:
+        raw_context = ContextTask().watchman_context(self.parent, self.root, 2)
+        prompt = build_watchman_prompt(
+            self.snapshot,
+            self.root,
+            self.parent,
+            2,
+            raw_context,
+            {"beam_width": 3, "children_per_expansion": 2, "max_rounds": 4},
+        )
 
-        prompt = build_proposal_prompt(self.snapshot, self.root, self.parent, 2, packet)
-
-        self.assertIn("Focus region: kernel.py (region)", prompt)
-        self.assertIn("Nearby regions: qkv projection (region), attention output (region)", prompt)
+        self.assertIn("Allowed scopes: kernel", prompt)
+        self.assertIn("Problem summary: Current target is memory-bound", prompt)
 
 
 if __name__ == "__main__":

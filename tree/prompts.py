@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from typing import TYPE_CHECKING
 
-from .watchman import WatchmanPacket
 from .types import RootMemory, SearchNode, TaskSnapshot
+
+if TYPE_CHECKING:
+    from .watchman import WatchmanPacket
 
 
 def _tail(items: list[str], limit: int = 5) -> list[str]:
@@ -67,18 +69,22 @@ def summarize_node(node: SearchNode | None) -> dict[str, object] | None:
     }
 
 
-def build_proposal_payload(
+def build_watchman_payload(
     task_snapshot: TaskSnapshot,
     root: RootMemory,
     parent: SearchNode,
     limit: int,
-    watchman_packet: WatchmanPacket | None = None,
+    raw_context: dict[str, object],
+    upper_bounds: dict[str, int],
 ) -> dict[str, object]:
     return {
-        "action": "propose",
-        "children_per_expansion": limit,
+        "action": "plan",
+        "children_upper_bound": limit,
+        "upper_bounds": upper_bounds,
         "task": {
+            "type": task_snapshot.task_type,
             "objective": task_snapshot.objective,
+            "target_path": task_snapshot.target_path,
             "editable_paths": task_snapshot.editable_paths,
             "constraints": task_snapshot.constraints,
             "reference_paths": task_snapshot.reference_paths,
@@ -86,11 +92,28 @@ def build_proposal_payload(
         },
         "root_memory": summarize_root_memory(root),
         "parent": summarize_node(parent),
-        "watchman": watchman_packet.to_payload() if watchman_packet is not None else None,
+        "facts": raw_context,
         "output_contract": {
             "type": "json",
             "schema_hint": {
-                "hypotheses": [
+                "bottleneck_card": {
+                    "scope": "kernel",
+                    "target": task_snapshot.target_path,
+                    "symptoms": ["local_bottleneck=memory"],
+                    "diagnoses": ["memory_bandwidth_pressure"],
+                    "response_families": ["memory_hierarchy"],
+                    "avoid_families": ["instruction_selection"],
+                    "rationale": "why this diagnosis matches the current evidence",
+                },
+                "search_policy": {
+                    "recommended_scope": "kernel",
+                    "scope_options": ["kernel"],
+                    "exploration_bias": "balanced",
+                    "branch_budget": {"children": 2, "beam_width": 2, "rounds": 2},
+                    "resource_hint": {"tier": "balanced", "notes": ["short resource note"]},
+                    "stop_conditions": ["one short stopping rule"],
+                },
+                "branch_cards": [
                     {
                         "id": "short-unique-id",
                         "title": "brief title",
@@ -104,98 +127,75 @@ def build_proposal_payload(
                         "disallowed_directions": ["do not switch into tensorization"],
                     },
                 ],
+                "frozen_decisions": ["short line that locks the high-level direction"],
             },
         },
     }
 
 
-def build_proposal_prompt(
+def build_watchman_prompt(
     task_snapshot: TaskSnapshot,
     root: RootMemory,
     parent: SearchNode,
     limit: int,
-    watchman_packet: WatchmanPacket | None = None,
+    raw_context: dict[str, object],
+    upper_bounds: dict[str, int],
 ) -> str:
-    watchman_lines = ""
-    if watchman_packet is not None:
-        families = ", ".join(card.family for card in watchman_packet.branch_cards)
-        policy_lines = ""
-        if watchman_packet.search_policy is not None:
-            policy = watchman_packet.search_policy
-            budget = policy.branch_budget
-            resource = policy.resource_hint
-            policy_lines = (
-                f"Recommended scope: {policy.recommended_scope or 'unspecified'}\n"
-                f"Scope options: {', '.join(policy.scope_options) if policy.scope_options else 'recommended only'}\n"
-                f"Exploration bias: {policy.exploration_bias}\n"
-                f"Branch budget: children={budget.children if budget.children is not None else 'use upper bound'}, beam={budget.beam_width if budget.beam_width is not None else 'use upper bound'}, rounds={budget.rounds if budget.rounds is not None else 'use upper bound'}\n"
-                f"Resource tier: {resource.tier}\n"
-                f"Resource notes: {', '.join(resource.notes) if resource.notes else 'none'}\n"
-                f"Stop conditions: {', '.join(policy.stop_conditions) if policy.stop_conditions else 'none'}\n"
-            )
-        region_lines = ""
-        if watchman_packet.region_graph is not None and watchman_packet.region_graph.regions:
-            graph = watchman_packet.region_graph
-            focus = next(
-                (region for region in graph.regions if region.id == graph.focus_region_id),
-                graph.regions[0],
-            )
-            nearby_regions = [
-                region
-                for region in graph.regions
-                if region.id in focus.adjacent and region.id != focus.id
-            ]
-            if not nearby_regions:
-                nearby_regions = [
-                    region for region in graph.regions if region.id != focus.id
-                ][:2]
-            nearby_summary = ", ".join(
-                f"{region.label} ({region.scope})" for region in nearby_regions[:2]
-            )
-            region_lines = (
-                f"Focus region: {focus.label} ({focus.scope})\n"
-                f"Region summary: {focus.summary or 'none'}\n"
-                f"Region signals: {', '.join(focus.signals) if focus.signals else 'none'}\n"
-                f"Nearby regions: {nearby_summary or 'none'}\n"
-            )
-        bottleneck_lines = ""
-        if watchman_packet.bottleneck_card is not None:
-            bottleneck = watchman_packet.bottleneck_card
-            bottleneck_lines = (
-                f"Watchman bottleneck scope: {bottleneck.scope}\n"
-                f"Watchman target: {bottleneck.target}\n"
-                f"Diagnoses: {', '.join(bottleneck.diagnoses) if bottleneck.diagnoses else 'unknown'}\n"
-                f"Preferred response families: {', '.join(bottleneck.response_families) if bottleneck.response_families else 'none'}\n"
-                f"Avoid families: {', '.join(bottleneck.avoid_families) if bottleneck.avoid_families else 'none'}\n"
-            )
-        watchman_lines = (
-            f"{region_lines}"
-            f"{bottleneck_lines}"
-            f"{policy_lines}"
-            f"Watchman branch families: {families}\n"
-            "Use the watchman branch cards from the payload as the frozen high-level decision layer.\n"
-            "Treat branch family order as a prior, not a rigid ranking. You may reorder or skip families if the telemetry supports it.\n"
-            "Prefer one child per distinct family before proposing close variants.\n"
-        )
+    facts_summary = []
+    planner_rules = raw_context.get("planner_rules")
+    if isinstance(planner_rules, dict):
+        allowed_scopes = planner_rules.get("allowed_scopes")
+        allowed_families = planner_rules.get("allowed_families")
+        if isinstance(allowed_scopes, list):
+            facts_summary.append(f"Allowed scopes: {', '.join(str(item) for item in allowed_scopes)}")
+        if isinstance(allowed_families, list):
+            facts_summary.append(f"Allowed families: {', '.join(str(item) for item in allowed_families[:8])}")
+    if raw_context.get("problem_summary"):
+        facts_summary.append(f"Problem summary: {raw_context['problem_summary']}")
     return (
-        "Propose distinct child hypotheses for one local optimization step.\n"
+        "You are the high-level planner for one search node.\n"
         "Return JSON only via TREE_OUTPUT_PATH.\n"
-        "Use TREE_TELEMETRY_PATH for the compact environment snapshot when you need richer context than the prompt.\n"
+        "Use TREE_TELEMETRY_PATH for rich environment context.\n"
         f"Task objective: {task_snapshot.objective}\n"
         f"Target path: {task_snapshot.target_path}\n"
-        f"Allowed editable paths: {', '.join(task_snapshot.editable_paths)}\n"
-        f"Need up to {limit} hypotheses.\n"
-        "Rules:\n"
-        "- One core hypothesis per child.\n"
-        "- Keep the hypotheses short and mutually distinct.\n"
-        "- Do not propose modifying benchmark, verifier, or orchestrator code.\n"
-        "- Use only the root-memory summary and parent summary from the payload.\n"
-        "- Treat watchman output as the high-level branch-identity prior.\n"
-        "- You may choose a narrower scope than recommended, but do not exceed the allowed edit surface.\n"
-        f"Current best score: {root.best_score}\n"
+        f"Children upper bound: {limit}\n"
+        f"Search upper bounds: beam={upper_bounds.get('beam_width')}, rounds={upper_bounds.get('max_rounds')}, children={upper_bounds.get('children_per_expansion')}\n"
         f"Parent node: {parent.id}\n"
-        f"{watchman_lines}"
+        f"Current best score: {root.best_score}\n"
+        "Rules:\n"
+        "- Consume facts, rules, history, and telemetry to decide the next high-level direction.\n"
+        "- Freeze the decision for the executor: scope, branch identities, budget hints, and stop conditions.\n"
+        "- Do not exceed the allowed edit surface or allowed scopes from the payload.\n"
+        "- Prefer distinct branches before close variants, but do not force diversity when the evidence is strong.\n"
+        "- Record only the key high-level decisions that the executor must not reopen.\n"
+        f"{chr(10).join(facts_summary)}\n"
     )
+
+
+def build_watchman_telemetry(
+    task_snapshot: TaskSnapshot,
+    root: RootMemory,
+    parent: SearchNode,
+    raw_context: dict[str, object],
+    upper_bounds: dict[str, int],
+) -> dict[str, object]:
+    telemetry = {
+        "action": "plan",
+        "task": {
+            "type": task_snapshot.task_type,
+            "objective": task_snapshot.objective,
+            "target_path": task_snapshot.target_path,
+            "editable_paths": task_snapshot.editable_paths,
+            "constraints": task_snapshot.constraints,
+            "reference_paths": task_snapshot.reference_paths,
+            "metadata": task_snapshot.metadata,
+        },
+        "root_memory": summarize_root_memory(root),
+        "parent": summarize_node(parent),
+        "upper_bounds": upper_bounds,
+        "facts": raw_context,
+    }
+    return telemetry
 
 
 def build_execution_payload(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shlex
 import sys
 import tempfile
@@ -10,6 +9,7 @@ from pathlib import Path
 
 from tree.agent import AgentStepError, CommandAgentAdapter
 from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
+from tree.watchman import WatchmanPacket
 
 
 class AdapterTask:
@@ -20,26 +20,9 @@ class AdapterTask:
                 title="Seed 1",
                 core_hypothesis="seed hypothesis",
                 editable_path_hints=["kernel.py"],
+                family="memory_hierarchy",
             )
         ][:limit]
-
-    def watchman_context(self, parent, root, limit):
-        return {
-            "branch_families": [
-                {
-                    "id": "memory",
-                    "family": "memory_hierarchy",
-                    "title": "Memory branch",
-                    "core_hypothesis": "improve memory traffic",
-                    "constraints_summary": "memory changes only",
-                    "editable_path_hints": ["kernel.py"],
-                    "rationale": "parent is memory-bound",
-                    "target_signals": ["bandwidth_gb_s"],
-                    "supporting_evidence": ["bottleneck=memory"],
-                    "disallowed_directions": ["do not pivot into tensorization"],
-                }
-            ][:limit]
-        }
 
 
 class CommandAgentAdapterTests(unittest.TestCase):
@@ -77,7 +60,7 @@ class CommandAgentAdapterTests(unittest.TestCase):
             id="node-0002",
             parent_id="node-0001",
             depth=1,
-            hypothesis=Hypothesis(id="child", title="Child", core_hypothesis="child"),
+            hypothesis=Hypothesis(id="child", title="Child", core_hypothesis="child", family="memory_hierarchy"),
             node_dir=str(self.repo_root / "node-0002"),
             sandbox_path=str(self.repo_root / "sandbox"),
             candidate_path=str(self.repo_root / "sandbox" / "kernel.py"),
@@ -87,9 +70,40 @@ class CommandAgentAdapterTests(unittest.TestCase):
         Path(self.node.sandbox_path).mkdir(parents=True, exist_ok=True)
         Path(self.node.candidate_path).write_text("kernel", encoding="utf-8")
 
-    def test_propose_reads_json_output_and_receives_env_paths(self) -> None:
+    def test_propose_uses_watchman_branch_cards(self) -> None:
+        adapter = CommandAgentAdapter(self.repo_root)
+        packet = WatchmanPacket(
+            branch_cards=[
+                Hypothesis(
+                    id="planner-1",
+                    title="Planner branch",
+                    core_hypothesis="planner hypothesis",
+                    family="memory_hierarchy",
+                )
+            ]
+        )
+
+        hypotheses = adapter.propose(
+            self.task,
+            self.snapshot,
+            self.root,
+            self.parent,
+            1,
+            watchman_packet=packet,
+        )
+
+        self.assertEqual(len(hypotheses), 1)
+        self.assertEqual(hypotheses[0].core_hypothesis, "planner hypothesis")
+
+    def test_missing_commands_fall_back_to_completed_execution(self) -> None:
+        adapter = CommandAgentAdapter(self.repo_root)
+        execution = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        self.assertEqual(execution.status, "completed")
+
+    def test_execute_reads_json_output_and_receives_env_paths(self) -> None:
         script = self._write_script(
-            "planner.py",
+            "executor.py",
             """
             import json
             import os
@@ -98,48 +112,72 @@ class CommandAgentAdapterTests(unittest.TestCase):
             prompt = Path(os.environ["TREE_PROMPT_PATH"]).read_text(encoding="utf-8")
             payload = json.loads(Path(os.environ["TREE_PAYLOAD_PATH"]).read_text(encoding="utf-8"))
             telemetry = json.loads(Path(os.environ["TREE_TELEMETRY_PATH"]).read_text(encoding="utf-8"))
-            output_path = Path(os.environ["TREE_OUTPUT_PATH"])
-            output_path.write_text(json.dumps({
-                "hypotheses": [{
-                    "id": "h1",
-                    "title": "Planner output",
-                    "core_hypothesis": "planner hypothesis",
-                    "constraints_summary": telemetry["action"] + ":" + prompt.splitlines()[0],
-                    "editable_path_hints": payload["task"]["editable_paths"],
-                }]
-            }), encoding="utf-8")
+            Path(os.environ["TREE_OUTPUT_PATH"]).write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "summary": prompt.splitlines()[0],
+                        "changed": True,
+                        "candidate_path": payload["candidate_path"],
+                        "metadata": {"action": telemetry["action"]},
+                    }
+                ),
+                encoding="utf-8",
+            )
             """,
         )
         adapter = CommandAgentAdapter(
             self.repo_root,
-            planner_command=self._python_command(script),
+            executor_command=self._python_command(script),
         )
 
-        hypotheses = adapter.propose(self.task, self.snapshot, self.root, self.parent, 1)
+        result = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
 
-        self.assertEqual(len(hypotheses), 1)
-        self.assertEqual(hypotheses[0].core_hypothesis, "planner hypothesis")
-        self.assertEqual(hypotheses[0].family, "memory_hierarchy")
-        self.assertEqual(hypotheses[0].target_signals, ["bandwidth_gb_s"])
-        self.assertEqual(
-            hypotheses[0].disallowed_directions,
-            ["do not pivot into tensorization"],
-        )
-        self.assertTrue(hypotheses[0].constraints_summary.startswith("propose:"))
-        logs_dir = Path(self.parent.node_dir) / "agent" / "propose"
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.metadata["action"], "execute")
+        logs_dir = Path(self.node.node_dir) / "agent" / "execute"
         self.assertTrue((logs_dir / "prompt.txt").exists())
         self.assertTrue((logs_dir / "payload.json").exists())
         self.assertTrue((logs_dir / "telemetry.json").exists())
         self.assertTrue((logs_dir / "output.json").exists())
 
-    def test_missing_commands_fall_back_to_watchman_and_completed_execution(self) -> None:
-        adapter = CommandAgentAdapter(self.repo_root)
+    def test_reflect_reads_json_output_and_receives_env_paths(self) -> None:
+        script = self._write_script(
+            "reflector.py",
+            """
+            import json
+            import os
+            from pathlib import Path
 
-        hypotheses = adapter.propose(self.task, self.snapshot, self.root, self.parent, 1)
-        execution = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+            telemetry = json.loads(Path(os.environ["TREE_TELEMETRY_PATH"]).read_text(encoding="utf-8"))
+            Path(os.environ["TREE_OUTPUT_PATH"]).write_text(
+                json.dumps(
+                    {
+                        "polarity": "positive",
+                        "summary": telemetry["action"],
+                        "evidence": ["e1", "e2"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            """,
+        )
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            reflector_command=self._python_command(script),
+        )
+        self.node.evaluation_result = EvaluationResult(
+            accepted=True,
+            score=2.0,
+            metrics={"returncode": 0},
+            summary="candidate",
+        )
 
-        self.assertEqual(hypotheses[0].family, "memory_hierarchy")
-        self.assertEqual(execution.status, "completed")
+        insight = adapter.reflect(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        self.assertEqual(insight.polarity, "positive")
+        self.assertEqual(insight.summary, "reflect")
+        self.assertEqual(insight.evidence, ["e1", "e2"])
 
     def test_invalid_json_raises_agent_step_error(self) -> None:
         script = self._write_script(
@@ -153,21 +191,21 @@ class CommandAgentAdapterTests(unittest.TestCase):
         )
         adapter = CommandAgentAdapter(
             self.repo_root,
-            planner_command=self._python_command(script),
+            executor_command=self._python_command(script),
         )
 
         with self.assertRaises(AgentStepError):
-            adapter.propose(self.task, self.snapshot, self.root, self.parent, 1)
+            adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
 
     def test_missing_output_raises_agent_step_error(self) -> None:
         script = self._write_script("missing_output.py", "pass\n")
         adapter = CommandAgentAdapter(
             self.repo_root,
-            planner_command=self._python_command(script),
+            executor_command=self._python_command(script),
         )
 
         with self.assertRaises(AgentStepError):
-            adapter.propose(self.task, self.snapshot, self.root, self.parent, 1)
+            adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
 
     def test_nonzero_returncode_raises_agent_step_error(self) -> None:
         script = self._write_script(
@@ -179,11 +217,11 @@ class CommandAgentAdapterTests(unittest.TestCase):
         )
         adapter = CommandAgentAdapter(
             self.repo_root,
-            planner_command=self._python_command(script),
+            executor_command=self._python_command(script),
         )
 
         with self.assertRaises(AgentStepError):
-            adapter.propose(self.task, self.snapshot, self.root, self.parent, 1)
+            adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
 
     def _write_script(self, name: str, source: str) -> Path:
         path = self.repo_root / name

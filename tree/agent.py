@@ -1,24 +1,21 @@
 from __future__ import annotations
 
 import abc
-import json
-import os
-import subprocess
-from pathlib import Path
 from typing import Any
 
+from pathlib import Path
+
+from .command import logs_for as _logs_for, run_json_command
 from .prompts import (
     build_agent_telemetry,
     build_execution_payload,
     build_execution_prompt,
-    build_proposal_payload,
-    build_proposal_prompt,
     build_reflection_payload,
     build_reflection_prompt,
 )
 from .task import OptimizationTask
 from .types import ExecutionResult, Hypothesis, Insight, RootMemory, SearchNode, TaskSnapshot
-from .watchman import Watchman, WatchmanPacket
+from .watchman import WatchmanPacket
 
 
 class AgentStepError(RuntimeError):
@@ -62,9 +59,6 @@ class AgentAdapter(abc.ABC):
 
 
 class NoOpAgentAdapter(AgentAdapter):
-    def __init__(self, *, watchman: Watchman | None = None) -> None:
-        self.watchman = watchman or Watchman()
-
     def propose(
         self,
         task: OptimizationTask,
@@ -74,8 +68,9 @@ class NoOpAgentAdapter(AgentAdapter):
         limit: int,
         watchman_packet: WatchmanPacket | None = None,
     ) -> list[Hypothesis]:
-        packet = watchman_packet or self.watchman.build_packet(task, task_snapshot, root, parent, limit)
-        return packet.branch_cards[:limit]
+        if watchman_packet is None:
+            return task.seed_hypotheses(parent, root, limit)
+        return watchman_packet.branch_cards[:limit]
 
     def execute(
         self,
@@ -149,18 +144,14 @@ class CommandAgentAdapter(AgentAdapter):
         self,
         repo_root: Path,
         *,
-        planner_command: str | None = None,
         executor_command: str | None = None,
         reflector_command: str | None = None,
         fallback: AgentAdapter | None = None,
-        watchman: Watchman | None = None,
     ) -> None:
         self.repo_root = repo_root
-        self.planner_command = planner_command
         self.executor_command = executor_command
         self.reflector_command = reflector_command
         self.fallback = fallback or NoOpAgentAdapter()
-        self.watchman = watchman or Watchman()
 
     def propose(
         self,
@@ -171,37 +162,9 @@ class CommandAgentAdapter(AgentAdapter):
         limit: int,
         watchman_packet: WatchmanPacket | None = None,
     ) -> list[Hypothesis]:
-        watchman_packet = watchman_packet or self.watchman.build_packet(task, task_snapshot, root, parent, limit)
-        if not self.planner_command:
-            return watchman_packet.branch_cards[:limit]
-
-        payload = build_proposal_payload(task_snapshot, root, parent, limit, watchman_packet)
-        prompt = build_proposal_prompt(task_snapshot, root, parent, limit, watchman_packet)
-        telemetry = build_agent_telemetry(
-            action="propose",
-            task_snapshot=task_snapshot,
-            root=root,
-            parent=parent,
-            watchman_packet=watchman_packet,
-        )
-        logs_dir = Path(parent.node_dir) / "agent" / "propose"
-        raw = self._run_json_command(
-            self.planner_command,
-            cwd=self.repo_root,
-            prompt=prompt,
-            payload=payload,
-            telemetry=telemetry,
-            logs_dir=logs_dir,
-        )
-        hypotheses_raw = raw if isinstance(raw, list) else raw.get("hypotheses")
-        if not isinstance(hypotheses_raw, list):
-            raise AgentStepError("Planner output must be a JSON list or an object with 'hypotheses'.")
-
-        hypotheses: list[Hypothesis] = []
-        for index, item in enumerate(hypotheses_raw[:limit]):
-            default_card = _match_watchman_card(item, index, watchman_packet.branch_cards)
-            hypotheses.append(_normalize_hypothesis(item, index, default=default_card))
-        return hypotheses
+        if watchman_packet is None:
+            return self.fallback.propose(task, task_snapshot, root, parent, limit)
+        return watchman_packet.branch_cards[:limit]
 
     def execute(
         self,
@@ -301,139 +264,15 @@ class CommandAgentAdapter(AgentAdapter):
         telemetry: dict[str, Any],
         logs_dir: Path,
     ) -> Any:
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        prompt_path = logs_dir / "prompt.txt"
-        payload_path = logs_dir / "payload.json"
-        telemetry_path = logs_dir / "telemetry.json"
-        output_path = logs_dir / "output.json"
-        stdout_path = logs_dir / "stdout.log"
-        stderr_path = logs_dir / "stderr.log"
-
-        prompt_path.write_text(prompt, encoding="utf-8")
-        payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        telemetry_path.write_text(json.dumps(telemetry, indent=2), encoding="utf-8")
-
-        env = os.environ.copy()
-        env["TREE_PROMPT_PATH"] = str(prompt_path)
-        env["TREE_PAYLOAD_PATH"] = str(payload_path)
-        env["TREE_TELEMETRY_PATH"] = str(telemetry_path)
-        env["TREE_OUTPUT_PATH"] = str(output_path)
-
-        result = subprocess.run(
+        return run_json_command(
             command,
-            cwd=str(cwd),
-            env=env,
-            shell=True,
-            text=True,
-            capture_output=True,
+            cwd=cwd,
+            prompt=prompt,
+            payload=payload,
+            telemetry=telemetry,
+            logs_dir=logs_dir,
+            error_cls=AgentStepError,
         )
-        stdout_path.write_text(result.stdout, encoding="utf-8")
-        stderr_path.write_text(result.stderr, encoding="utf-8")
-
-        if result.returncode != 0:
-            raise AgentStepError(
-                f"Agent command failed with return code {result.returncode}: {command}",
-            )
-        if not output_path.exists():
-            raise AgentStepError(f"Agent command did not write {output_path}.")
-
-        try:
-            return json.loads(output_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise AgentStepError(f"Agent command wrote invalid JSON: {exc}") from exc
-
-
-def _normalize_hypothesis(
-    item: Any,
-    index: int,
-    *,
-    default: Hypothesis | None = None,
-) -> Hypothesis:
-    if isinstance(item, str):
-        return Hypothesis(
-            id=default.id if default is not None else f"hypothesis-{index + 1}",
-            title=default.title if default is not None else f"Hypothesis {index + 1}",
-            core_hypothesis=item.strip(),
-            constraints_summary=default.constraints_summary if default is not None else "",
-            editable_path_hints=list(default.editable_path_hints) if default is not None else [],
-            family=default.family if default is not None else "unspecified",
-            rationale=default.rationale if default is not None else "",
-            target_signals=list(default.target_signals) if default is not None else [],
-            supporting_evidence=list(default.supporting_evidence) if default is not None else [],
-            disallowed_directions=list(default.disallowed_directions) if default is not None else [],
-        )
-
-    if not isinstance(item, dict):
-        raise AgentStepError("Each hypothesis must be a JSON object or string.")
-
-    hints = item.get("editable_path_hints")
-    if hints is not None and not isinstance(hints, list):
-        raise AgentStepError("editable_path_hints must be a JSON list when present.")
-
-    return Hypothesis(
-        id=str(item.get("id", default.id if default is not None else f"hypothesis-{index + 1}")),
-        title=str(item.get("title", default.title if default is not None else f"Hypothesis {index + 1}")),
-        core_hypothesis=str(
-            item.get("core_hypothesis", default.core_hypothesis if default is not None else "")
-        ).strip(),
-        constraints_summary=str(
-            item.get(
-                "constraints_summary",
-                default.constraints_summary if default is not None else "",
-            )
-        ),
-        editable_path_hints=(
-            [str(hint) for hint in hints]
-            if hints is not None
-            else list(default.editable_path_hints) if default is not None else []
-        ),
-        family=str(item.get("family", default.family if default is not None else "unspecified")),
-        rationale=str(item.get("rationale", default.rationale if default is not None else "")),
-        target_signals=_string_list_or_default(item, "target_signals", default.target_signals if default is not None else []),
-        supporting_evidence=_string_list_or_default(item, "supporting_evidence", default.supporting_evidence if default is not None else []),
-        disallowed_directions=_string_list_or_default(item, "disallowed_directions", default.disallowed_directions if default is not None else []),
-    )
-
-
-def _match_watchman_card(
-    item: Any,
-    index: int,
-    branch_cards: list[Hypothesis],
-) -> Hypothesis | None:
-    if index >= len(branch_cards):
-        return None
-    fallback = branch_cards[index]
-    if not isinstance(item, dict):
-        return fallback
-
-    family = str(item.get("family", "")).strip()
-    if family:
-        for card in branch_cards:
-            if card.family == family:
-                return card
-
-    identifier = str(item.get("id", "")).strip()
-    if identifier:
-        for card in branch_cards:
-            if card.id == identifier:
-                return card
-
-    title = str(item.get("title", "")).strip()
-    if title:
-        for card in branch_cards:
-            if card.title == title:
-                return card
-
-    return fallback
-
-
-def _string_list_or_default(item: dict[str, Any], key: str, default: list[str]) -> list[str]:
-    value = item.get(key)
-    if value is None:
-        return list(default)
-    if isinstance(value, list):
-        return [str(entry) for entry in value]
-    return list(default)
 
 
 def _basic_evidence(node: SearchNode) -> list[str]:
@@ -454,13 +293,3 @@ def _basic_evidence(node: SearchNode) -> list[str]:
 
 def _dict_value(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
-
-
-def _logs_for(logs_dir: Path) -> dict[str, str]:
-    return {
-        "prompt": str(logs_dir / "prompt.txt"),
-        "payload": str(logs_dir / "payload.json"),
-        "output": str(logs_dir / "output.json"),
-        "stdout": str(logs_dir / "stdout.log"),
-        "stderr": str(logs_dir / "stderr.log"),
-    }

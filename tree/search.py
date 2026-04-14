@@ -41,7 +41,7 @@ class TreeSearchEngine:
         self.frontier_node_ids: list[str] = []
         self.final_result: SearchResult | None = None
         self._node_counter = 0
-        self.watchman = Watchman()
+        self.watchman = Watchman(planner_command=config.planner_command)
 
     def run(self) -> SearchResult:
         self.run_dir.mkdir(parents=True, exist_ok=True)

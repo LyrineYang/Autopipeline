@@ -306,55 +306,38 @@ class AutoKernelTask(OptimizationTask):
             hardware_context=hardware_context,
             benchmark_context=benchmark_context,
         )
-        bottleneck_card = _build_bottleneck_card(
-            kernel_file=self.kernel_file,
-            kernel_type=self.kernel_type,
-            static_prior=self.profile_prior,
-            hardware_context=hardware_context,
-            benchmark_context=benchmark_context,
-            history_context=history_context,
-            region_graph=region_graph,
-        )
-        avoid_families = _string_values(bottleneck_card.get("avoid_families"))
-        branch_families = _recommend_branch_families(
-            kernel_type=self.kernel_type,
-            scope=str(bottleneck_card.get("scope", "kernel")),
-            diagnoses=_string_values(bottleneck_card.get("diagnoses")),
-            allowed_families=_allowed_branch_families_for_task(),
-            avoid_families=avoid_families,
-            static_prior=self.profile_prior,
-            hardware_context=hardware_context,
-            benchmark_context=benchmark_context,
-            history_context=history_context,
-            limit=limit,
-        )
-        bottleneck_card["response_families"] = [
-            str(entry.get("family", "")) for entry in branch_families if entry.get("family")
-        ]
-        search_policy = _search_policy_hint(
-            bottleneck_card=bottleneck_card,
-            benchmark_context=benchmark_context,
-            history_context=history_context,
-            child_limit=limit,
-            beam_limit=(upper_bounds or {}).get("beam_width", limit),
-            round_limit=(upper_bounds or {}).get("max_rounds", 1),
-        )
         return {
             "static_prior": self.profile_prior,
             "hardware_context": hardware_context,
             "benchmark_context": benchmark_context,
             "history_context": history_context,
             "region_graph": region_graph,
-            "bottleneck_card": bottleneck_card,
-            "search_policy": search_policy,
-            "branch_families": branch_families,
+            "symptoms": _symptoms_from_context(
+                static_prior=self.profile_prior,
+                hardware_context=hardware_context,
+                benchmark_context=benchmark_context,
+                history_context=history_context,
+            ),
+            "profile_hints": _profile_bottleneck_hints(self.profile_prior),
+            "problem_summary": _problem_summary(
+                kernel_file=self.kernel_file,
+                kernel_type=self.kernel_type,
+                static_prior=self.profile_prior,
+                benchmark_context=benchmark_context,
+                region_graph=region_graph,
+            ),
+            "planner_rules": {
+                "allowed_scopes": ["kernel"],
+                "allowed_families": sorted(_allowed_branch_families_for_task()),
+                "editable_paths": ["kernel.py"],
+                "avoid_families": [],
+                "resource_ceiling": upper_bounds or {},
+            },
             "frozen_decisions": [
-                "Keep branch identities aligned to distinct mechanism families.",
-                "Use profile facts, hardware context, and recent insights as priors before proposing variants.",
-                "Treat the region graph as the location prior and the bottleneck card as the diagnosis prior.",
-                "Current AutoKernelTask still edits only sandbox-local kernel.py, so response families stay kernel-local even if profile hints come from a wider pipeline context.",
-                "Treat CLI beam and round settings as upper bounds; let watchman suggest a tighter budget when the diagnosis is clear.",
-                "Executor should stay inside the chosen family instead of reopening high-level direction search.",
+                "Current AutoKernelTask edits only sandbox-local kernel.py.",
+                "The planner may use wider pipeline context for diagnosis, but execution must stay inside the single-kernel edit surface.",
+                "Beam, round, and child counts are ceilings; the planner may tighten them but must not exceed them.",
+                "Planner output should freeze the high-level direction so the executor can focus on implementation.",
             ],
         }
 
@@ -522,40 +505,6 @@ def _benchmark_context(parent: SearchNode) -> dict[str, Any]:
     }
 
 
-def _build_bottleneck_card(
-    *,
-    kernel_file: Path,
-    kernel_type: str,
-    static_prior: dict[str, Any],
-    hardware_context: dict[str, Any],
-    benchmark_context: dict[str, Any],
-    history_context: dict[str, Any],
-    region_graph: dict[str, Any],
-) -> dict[str, Any]:
-    scope = _resolve_scope(static_prior, region_graph)
-    target = str(static_prior.get("pipeline_region_label") or kernel_file.name)
-    diagnoses = _diagnoses_from_context(
-        kernel_type=kernel_type,
-        static_prior=static_prior,
-        benchmark_context=benchmark_context,
-        scope=scope,
-    )
-    return {
-        "scope": scope,
-        "target": target,
-        "symptoms": _symptoms_from_context(
-            static_prior=static_prior,
-            hardware_context=hardware_context,
-            benchmark_context=benchmark_context,
-            history_context=history_context,
-        ),
-        "diagnoses": diagnoses,
-        "response_families": [],
-        "avoid_families": _avoid_families_for_diagnoses(diagnoses),
-        "rationale": _bottleneck_rationale(diagnoses, scope=scope),
-    }
-
-
 def _build_region_graph(
     *,
     kernel_file: Path,
@@ -662,44 +611,29 @@ def _region_signals(
     return signals[:4]
 
 
-def _diagnoses_from_context(
+def _problem_summary(
     *,
+    kernel_file: Path,
     kernel_type: str,
     static_prior: dict[str, Any],
     benchmark_context: dict[str, Any],
-    scope: str,
-) -> list[str]:
+    region_graph: dict[str, Any],
+) -> str:
+    scope = _normalize_scope(static_prior.get("optimization_scope"))
     metrics = _dict_metrics(benchmark_context.get("metrics"))
-    diagnoses: list[str] = []
-    for hint in _profile_bottleneck_hints(static_prior):
-        diagnosis = _diagnosis_from_hint(hint)
-        if diagnosis and diagnosis not in diagnoses:
-            diagnoses.append(diagnosis)
-
-    if not diagnoses:
-        bottleneck = str(metrics.get("bottleneck", "unknown")).lower()
-        if bottleneck == "memory":
-            diagnoses.append("memory_bandwidth_pressure")
-        elif bottleneck == "compute":
-            diagnoses.append("compute_saturation")
-        elif bottleneck == "launch":
-            diagnoses.append("launch_overhead")
-        else:
-            diagnoses.append("uncertain_local_bottleneck")
-
-    if kernel_type in {"softmax", "layernorm", "rmsnorm", "reduce", "cross_entropy"}:
-        if "layout_or_boundary_sensitivity" not in diagnoses:
-            diagnoses.append("layout_or_boundary_sensitivity")
-
-    if scope == "pipeline" and "kernel_boundary_overhead" not in diagnoses:
-        if _string_values(static_prior.get("upstream_regions")) or _string_values(static_prior.get("downstream_regions")):
-            diagnoses.append("kernel_boundary_overhead")
-
-    if metrics.get("score_value") is not None and float(metrics.get("score_value") or 0.0) < 1.0:
-        if "baseline_underperformance" not in diagnoses:
-            diagnoses.append("baseline_underperformance")
-
-    return diagnoses[:4]
+    local_bottleneck = str(metrics.get("bottleneck", "unknown")).lower()
+    focus_region = static_prior.get("pipeline_region_label") or kernel_file.name
+    if scope == "pipeline":
+        return (
+            f"Current target sits inside pipeline region {focus_region}. "
+            f"Local benchmark evidence points to {local_bottleneck} pressure, but execution is still single-kernel."
+        )
+    if scope == "region":
+        return (
+            f"Current target is region {focus_region}. "
+            f"Local benchmark evidence points to {local_bottleneck} pressure."
+        )
+    return f"Current target is kernel {kernel_file.name}; local benchmark evidence points to {local_bottleneck} pressure."
 
 
 def _symptoms_from_context(
@@ -732,482 +666,8 @@ def _symptoms_from_context(
     if history_context.get("negative_insights"):
         symptoms.append(f"recent_negative_insights={len(history_context['negative_insights'])}")
     return symptoms[:6]
-
-
-def _avoid_families_for_diagnoses(diagnoses: list[str]) -> list[str]:
-    avoid: list[str] = []
-    if "memory_bandwidth_pressure" in diagnoses:
-        avoid.append("instruction_selection")
-    if "compute_saturation" in diagnoses:
-        avoid.append("memory_hierarchy")
-    if "layout_or_boundary_sensitivity" in diagnoses:
-        avoid.append("instruction_selection")
-    if "launch_overhead" in diagnoses:
-        avoid.append("instruction_selection")
-    if "kernel_boundary_overhead" in diagnoses:
-        avoid.append("instruction_selection")
-    if "communication_pressure" in diagnoses:
-        avoid.append("control_flow_specialization")
-    return list(dict.fromkeys(avoid))
-
-
-def _bottleneck_rationale(diagnoses: list[str], *, scope: str) -> str:
-    if not diagnoses:
-        return "No stable local diagnosis is available yet."
-    prefix = {
-        "pipeline": "Current pipeline diagnosis",
-        "region": "Current region diagnosis",
-    }.get(scope, "Current local diagnosis")
-    if len(diagnoses) == 1:
-        return f"{prefix} points to {diagnoses[0]}."
-    return f"{prefix} points to {diagnoses[0]} with secondary pressure from {diagnoses[1]}."
-
-
-def _search_policy_hint(
-    *,
-    bottleneck_card: dict[str, Any],
-    benchmark_context: dict[str, Any],
-    history_context: dict[str, Any],
-    child_limit: int,
-    beam_limit: int,
-    round_limit: int,
-) -> dict[str, Any]:
-    diagnoses = _string_values(bottleneck_card.get("diagnoses"))
-    scope = str(bottleneck_card.get("scope", "kernel"))
-    accepted = bool(benchmark_context.get("accepted"))
-    score = benchmark_context.get("score")
-    positive_count = len(_string_values(history_context.get("positive_insights")))
-    negative_count = len(_string_values(history_context.get("negative_insights")))
-
-    if "uncertain_local_bottleneck" in diagnoses or negative_count >= positive_count + 2:
-        exploration_bias = "explore"
-    elif accepted and score is not None and float(score) > 1.0 and positive_count >= negative_count:
-        exploration_bias = "exploit"
-    else:
-        exploration_bias = "balanced"
-
-    branch_budget = {
-        "explore": {
-            "children": min(child_limit, 3),
-            "beam_width": min(beam_limit, 2),
-            "rounds": min(round_limit, 3),
-        },
-        "balanced": {
-            "children": min(child_limit, 2),
-            "beam_width": min(beam_limit, 2),
-            "rounds": min(round_limit, 2),
-        },
-        "exploit": {
-            "children": 1,
-            "beam_width": 1,
-            "rounds": 1,
-        },
-    }[exploration_bias]
-    resource_tier = {
-        "explore": "generous",
-        "balanced": "balanced",
-        "exploit": "lean",
-    }[exploration_bias]
-    resource_notes: list[str] = []
-    if exploration_bias == "explore":
-        resource_notes.append("Preserve headroom while the diagnosis is still uncertain.")
-    elif exploration_bias == "exploit":
-        resource_notes.append("Prefer lean local iterations when one branch already looks promising.")
-    else:
-        resource_notes.append("Keep moderate headroom while comparing distinct local families.")
-    if scope == "pipeline":
-        resource_notes.append("Do not spend pipeline-scale resources until a pipeline task exists.")
-
-    scope_options = [scope]
-    if scope == "pipeline":
-        scope_options = ["kernel", "region", "pipeline"]
-    elif scope == "region":
-        scope_options = ["kernel", "region"]
-
-    stop_conditions: list[str] = []
-    if accepted and score is not None and float(score) > 1.5:
-        stop_conditions.append("stop when one accepted child clearly beats the current baseline")
-    if "uncertain_local_bottleneck" in diagnoses:
-        stop_conditions.append("stop broad branching once one family produces a consistent accepted improvement")
-    if scope == "pipeline":
-        stop_conditions.append("stay inside kernel-local execution until a pipeline task exists")
-
-    return {
-        "recommended_scope": scope,
-        "scope_options": scope_options,
-        "exploration_bias": exploration_bias,
-        "branch_budget": branch_budget,
-        "resource_hint": {
-            "tier": resource_tier,
-            "notes": resource_notes,
-        },
-        "stop_conditions": stop_conditions,
-    }
-
-
-def _recommend_branch_families(
-    *,
-    kernel_type: str,
-    scope: str,
-    diagnoses: list[str],
-    allowed_families: set[str] | None,
-    avoid_families: list[str],
-    static_prior: dict[str, Any],
-    hardware_context: dict[str, Any],
-    benchmark_context: dict[str, Any],
-    history_context: dict[str, Any],
-    limit: int,
-) -> list[dict[str, Any]]:
-    templates = _family_templates(kernel_type)
-    scored = []
-    for template in templates:
-        family = str(template["family"])
-        if allowed_families is not None and family not in allowed_families:
-            continue
-        if family in avoid_families:
-            continue
-        score = _family_score(
-            family,
-            kernel_type=kernel_type,
-            scope=scope,
-            diagnoses=diagnoses,
-            benchmark_context=benchmark_context,
-            history_context=history_context,
-        )
-        scored.append((score, template))
-    scored.sort(key=lambda item: item[0], reverse=True)
-
-    branch_families: list[dict[str, Any]] = []
-    for _, template in scored[:limit]:
-        branch_families.append(
-            {
-                **template,
-                "target_signals": template["target_signals"],
-                "supporting_evidence": _supporting_evidence(
-                    template["family"],
-                    static_prior=static_prior,
-                    hardware_context=hardware_context,
-                    benchmark_context=benchmark_context,
-                    history_context=history_context,
-                ),
-            }
-        )
-    return branch_families
-
-
-def _family_templates(kernel_type: str) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": "memory-hierarchy",
-            "family": "memory_hierarchy",
-            "title": "Memory hierarchy branch",
-            "core_hypothesis": (
-                "Reshape data movement, staging, vectorization, or locality to better match the hot shapes "
-                "without changing external semantics."
-            ),
-            "constraints_summary": "Stay within memory-hierarchy changes; do not switch to a broad algorithm rewrite.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when bandwidth, locality, or memory traffic looks like the dominant limiter.",
-            "target_signals": ["bandwidth_gb_s", "pct_peak_bandwidth", "peak_vram_mb", "bottleneck"],
-            "disallowed_directions": ["Do not pivot into tensorization or broad algorithm changes."],
-        },
-        {
-            "id": "parallelization",
-            "family": "parallelization",
-            "title": "Parallelization branch",
-            "core_hypothesis": (
-                "Retune tile geometry, work partitioning, or CTA/warp decomposition to better balance the current workload."
-            ),
-            "constraints_summary": "Keep the same overall algorithm family; change how work is partitioned.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when current launch decomposition leaves parallelism or occupancy on the table.",
-            "target_signals": ["throughput_tflops", "speedup_vs_pytorch", "bottleneck"],
-            "disallowed_directions": ["Do not combine this branch with a broad memory-layout rewrite."],
-        },
-        {
-            "id": "occupancy-launch",
-            "family": "occupancy_launch",
-            "title": "Occupancy and launch branch",
-            "core_hypothesis": (
-                "Rebalance launch geometry, register pressure, and shared-memory usage to increase useful active work."
-            ),
-            "constraints_summary": "Focus on launch and resource balance instead of changing core math.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when the kernel appears resource-limited or launch-limited.",
-            "target_signals": ["speedup_vs_pytorch", "pct_peak_compute", "pct_peak_bandwidth"],
-            "disallowed_directions": ["Do not turn this branch into a new algorithm family."],
-        },
-        {
-            "id": "latency-hiding",
-            "family": "latency_hiding",
-            "title": "Latency-hiding branch",
-            "core_hypothesis": (
-                "Reduce exposed stalls by overlapping work, trimming synchronization, or improving pipelining."
-            ),
-            "constraints_summary": "Preserve the same algorithm and numerical behavior while reducing exposed latency.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when memory or synchronization stalls appear to dominate the hot path.",
-            "target_signals": ["throughput_tflops", "bandwidth_gb_s", "bottleneck"],
-            "disallowed_directions": ["Do not mix this branch with broad control-flow specialization."],
-        },
-        {
-            "id": "instruction-selection",
-            "family": "instruction_selection",
-            "title": "Instruction-selection branch",
-            "core_hypothesis": (
-                f"Introduce a more compute-dense {kernel_type}-appropriate instruction path or tensorization strategy "
-                "without changing the external interface."
-            ),
-            "constraints_summary": "Focus on compute path selection rather than memory hierarchy changes.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when the kernel is compute-facing and has room for denser math instructions.",
-            "target_signals": ["throughput_tflops", "pct_peak_compute", "bottleneck"],
-            "disallowed_directions": ["Do not turn this branch into a broad memory-traffic rewrite."],
-        },
-        {
-            "id": "control-flow-specialization",
-            "family": "control_flow_specialization",
-            "title": "Control-flow specialization branch",
-            "core_hypothesis": (
-                "Specialize indexing or hot-shape control flow to remove unnecessary branching and wasted work."
-            ),
-            "constraints_summary": "Keep the hot-path specialization local; avoid changing benchmark or verifier assumptions.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when the extracted kernel already targets a narrow shape family and can benefit from specialization.",
-            "target_signals": ["speedup_vs_pytorch", "correctness", "bottleneck"],
-            "disallowed_directions": ["Do not combine with a separate tensorization rewrite in the same branch."],
-        },
-        {
-            "id": "fusion",
-            "family": "fusion",
-            "title": "Fusion branch",
-            "core_hypothesis": (
-                "Reduce cross-kernel boundary cost by fusing adjacent work or collapsing redundant stage transitions."
-            ),
-            "constraints_summary": "Only pursue local fusion or boundary removal; do not rewrite the whole pipeline.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when pipeline boundaries, repeated launches, or redundant materialization dominate.",
-            "target_signals": ["launch_overhead", "boundary_cost", "materialization_count"],
-            "disallowed_directions": ["Do not turn this branch into a pure single-kernel tiling exercise."],
-        },
-        {
-            "id": "layout-propagation",
-            "family": "layout_propagation",
-            "title": "Layout propagation branch",
-            "core_hypothesis": (
-                "Keep a better intermediate layout across adjacent work so later stages avoid transpose or reshaping overhead."
-            ),
-            "constraints_summary": "Focus on region or boundary layout choices instead of isolated instruction tweaks.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when region boundaries or layout churn make local kernels look slower than they should.",
-            "target_signals": ["layout_churn", "boundary_cost", "memory_traffic"],
-            "disallowed_directions": ["Do not drift into a broad launch retuning branch."],
-        },
-        {
-            "id": "launch-consolidation",
-            "family": "launch_consolidation",
-            "title": "Launch consolidation branch",
-            "core_hypothesis": (
-                "Reduce launch overhead by merging tiny stages, simplifying boundaries, or batching control flow."
-            ),
-            "constraints_summary": "Focus on launch count and stage granularity rather than local math changes.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when many small kernels or stage transitions dominate runtime.",
-            "target_signals": ["launch_overhead", "kernel_count", "stage_granularity"],
-            "disallowed_directions": ["Do not spend this branch on isolated instruction selection."],
-        },
-        {
-            "id": "overlap-pipelining",
-            "family": "overlap_pipelining",
-            "title": "Overlap and pipelining branch",
-            "core_hypothesis": (
-                "Restructure the hot region to overlap communication, memory movement, or dependent stages more effectively."
-            ),
-            "constraints_summary": "Preserve semantics while reducing exposed waiting across the region.",
-            "editable_path_hints": ["kernel.py"],
-            "rationale": "Use this branch when synchronization, communication, or stage waiting dominates the bottleneck.",
-            "target_signals": ["communication_wait", "sync_wait", "stall_ratio"],
-            "disallowed_directions": ["Do not collapse into a pure memory-layout rewrite unless the branch card says so."],
-        },
-    ]
-
-
-def _family_score(
-    family: str,
-    *,
-    kernel_type: str,
-    scope: str = "kernel",
-    diagnoses: list[str] | None = None,
-    benchmark_context: dict[str, Any],
-    history_context: dict[str, Any],
-) -> float:
-    score = 0.0
-    diagnoses = diagnoses or []
-    metrics = _dict_metrics(benchmark_context.get("metrics"))
-    bottleneck = str(metrics.get("bottleneck", "unknown")).lower()
-
-    if bottleneck == "memory":
-        score += {
-            "memory_hierarchy": 4.0,
-            "latency_hiding": 3.0,
-            "parallelization": 2.0,
-            "control_flow_specialization": 1.5,
-            "occupancy_launch": 1.0,
-        }.get(family, 0.0)
-    elif bottleneck == "compute":
-        score += {
-            "instruction_selection": 4.0,
-            "parallelization": 3.0,
-            "occupancy_launch": 2.5,
-            "latency_hiding": 1.5,
-            "memory_hierarchy": 1.0,
-        }.get(family, 0.0)
-    else:
-        score += {
-            "parallelization": 2.5,
-            "memory_hierarchy": 2.5,
-            "occupancy_launch": 2.0,
-            "control_flow_specialization": 1.5,
-            "latency_hiding": 1.5,
-            "instruction_selection": 1.5,
-        }.get(family, 0.0)
-
-    for diagnosis in diagnoses:
-        score += {
-            "memory_bandwidth_pressure": {
-                "memory_hierarchy": 4.0,
-                "latency_hiding": 2.5,
-                "layout_propagation": 2.0,
-            },
-            "compute_saturation": {
-                "instruction_selection": 4.0,
-                "parallelization": 3.0,
-                "occupancy_launch": 2.0,
-            },
-            "launch_overhead": {
-                "launch_consolidation": 4.0,
-                "fusion": 3.0,
-                "occupancy_launch": 1.5,
-            },
-            "synchronization_pressure": {
-                "overlap_pipelining": 4.0,
-                "latency_hiding": 3.0,
-            },
-            "communication_pressure": {
-                "overlap_pipelining": 4.0,
-                "fusion": 1.5,
-            },
-            "kernel_boundary_overhead": {
-                "fusion": 4.0,
-                "layout_propagation": 3.0,
-                "launch_consolidation": 2.0,
-            },
-            "layout_or_boundary_sensitivity": {
-                "layout_propagation": 4.0,
-                "memory_hierarchy": 2.0,
-                "control_flow_specialization": 1.5,
-            },
-            "baseline_underperformance": {
-                "parallelization": 1.0,
-                "memory_hierarchy": 1.0,
-                "fusion": 1.0,
-            },
-            "uncertain_local_bottleneck": {
-                "parallelization": 1.0,
-                "memory_hierarchy": 1.0,
-                "occupancy_launch": 1.0,
-            },
-        }.get(diagnosis, {}).get(family, 0.0)
-
-    if scope == "kernel" and family in {"fusion", "layout_propagation", "launch_consolidation", "overlap_pipelining"}:
-        score -= 1.5
-    if scope == "region" and family in {"layout_propagation", "launch_consolidation", "overlap_pipelining"}:
-        score += 1.0
-    if scope == "pipeline" and family in {"fusion", "layout_propagation", "launch_consolidation", "overlap_pipelining"}:
-        score += 1.5
-
-    if kernel_type in {"matmul", "flash_attention", "fused_mlp"} and family in {"instruction_selection", "parallelization"}:
-        score += 1.0
-    if kernel_type in {"softmax", "layernorm", "rmsnorm", "reduce", "cross_entropy", "rotary_embedding"} and family in {"memory_hierarchy", "control_flow_specialization"}:
-        score += 1.0
-
-    family_phrase = family.replace("_", " ")
-    positive_blob = " ".join(
-        str(entry).lower()
-        for entry in history_context.get("positive_insights", [])
-    )
-    negative_blob = " ".join(
-        str(entry).lower()
-        for entry in history_context.get("negative_insights", [])
-    )
-    if family_phrase in positive_blob:
-        score += 0.5
-    if family_phrase in negative_blob:
-        score -= 0.5
-
-    return score
-
-
-def _supporting_evidence(
-    family: str,
-    *,
-    static_prior: dict[str, Any],
-    hardware_context: dict[str, Any],
-    benchmark_context: dict[str, Any],
-    history_context: dict[str, Any],
-) -> list[str]:
-    evidence: list[str] = []
-    if static_prior.get("optimization_scope"):
-        evidence.append(f"scope={_normalize_scope(static_prior['optimization_scope'])}")
-    if static_prior.get("kernel_type"):
-        evidence.append(f"kernel_type={static_prior['kernel_type']}")
-    if static_prior.get("pct_total_gpu_time") is not None:
-        evidence.append(f"pct_total_gpu_time={static_prior['pct_total_gpu_time']}")
-    if static_prior.get("model_shape_display"):
-        evidence.append(f"model_shape={static_prior['model_shape_display']}")
-    if static_prior.get("pipeline_region_label"):
-        evidence.append(f"focus_region={static_prior['pipeline_region_label']}")
-    profile_bottlenecks = _profile_bottleneck_hints(static_prior)
-    if profile_bottlenecks:
-        evidence.append(f"profile_bottlenecks={','.join(profile_bottlenecks[:3])}")
-    metrics = _dict_metrics(benchmark_context.get("metrics"))
-    if metrics.get("bottleneck"):
-        evidence.append(f"bottleneck={metrics['bottleneck']}")
-    if metrics.get("score_metric") and metrics.get("score_value") is not None:
-        evidence.append(f"{metrics['score_metric']}={metrics['score_value']}")
-    if hardware_context.get("gpu_name"):
-        evidence.append(f"gpu={hardware_context['gpu_name']}")
-    if hardware_context.get("compute_capability"):
-        evidence.append(f"compute_capability={hardware_context['compute_capability']}")
-    negatives = history_context.get("negative_insights", [])
-    if negatives:
-        evidence.append(f"recent_negative_insights={len(negatives)}")
-    positives = history_context.get("positive_insights", [])
-    if positives:
-        evidence.append(f"recent_positive_insights={len(positives)}")
-    evidence.append(f"family={family}")
-    return evidence
-
-
 def _allowed_branch_families_for_task() -> set[str]:
     return set(_KERNEL_LOCAL_FAMILIES)
-
-
-def _resolve_scope(static_prior: dict[str, Any], region_graph: dict[str, Any]) -> str:
-    explicit_scope = _normalize_scope(static_prior.get("optimization_scope"))
-    if explicit_scope != "kernel":
-        return explicit_scope
-    regions = region_graph.get("regions", [])
-    if isinstance(regions, list):
-        for region in regions:
-            if not isinstance(region, dict):
-                continue
-            region_scope = _normalize_scope(region.get("scope"))
-            if region_scope == "pipeline":
-                return "pipeline"
-            if region_scope == "region":
-                return "region"
-    return "kernel"
 
 
 def _profile_bottleneck_hints(static_prior: dict[str, Any]) -> list[str]:
@@ -1219,8 +679,9 @@ def _profile_bottleneck_hints(static_prior: dict[str, Any]) -> list[str]:
     normalized: list[str] = []
     for hint in hints:
         value = _normalize_hint(hint)
-        if value and value not in normalized:
-            normalized.append(value)
+        diagnosis = _diagnosis_from_hint(value) or value
+        if diagnosis and diagnosis not in normalized:
+            normalized.append(diagnosis)
     return normalized
 
 
