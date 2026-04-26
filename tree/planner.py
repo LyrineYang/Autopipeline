@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from .command import run_json_command
-from .prompts import build_watchman_payload, build_watchman_prompt, build_watchman_telemetry
+from .prompts import build_planner_payload, build_planner_prompt, build_planner_telemetry
+from .sensing import SensingRuntime
 from .types import (
     BranchBudgetHint,
     BottleneckCard,
@@ -22,10 +23,9 @@ from .types import (
 
 
 @dataclass(slots=True)
-class WatchmanPacket:
+class PlannerPacket:
     static_prior: dict[str, Any] = field(default_factory=dict)
     hardware_context: dict[str, Any] = field(default_factory=dict)
-    benchmark_context: dict[str, Any] = field(default_factory=dict)
     history_context: dict[str, Any] = field(default_factory=dict)
     region_graph: RegionGraph | None = None
     bottleneck_card: BottleneckCard | None = None
@@ -41,7 +41,7 @@ class PlannerStepError(RuntimeError):
     """Raised when the planner command fails structurally."""
 
 
-class Watchman:
+class Planner:
     """High-level planning agent for branch identities and search policy."""
 
     def __init__(self, *, planner_command: str | None = None) -> None:
@@ -55,8 +55,8 @@ class Watchman:
         parent: SearchNode,
         limit: int,
         upper_bounds: dict[str, int] | None = None,
-    ) -> WatchmanPacket:
-        context_provider = getattr(task, "watchman_context", None)
+    ) -> PlannerPacket:
+        context_provider = getattr(task, "planner_context", None)
         if not callable(context_provider):
             return self._fallback_packet(
                 task=task,
@@ -104,12 +104,21 @@ class Watchman:
         raw_context: dict[str, Any],
         limit: int,
         upper_bounds: dict[str, int],
-    ) -> WatchmanPacket:
-        prompt = build_watchman_prompt(task_snapshot, root, parent, limit, raw_context, upper_bounds)
-        payload = build_watchman_payload(task_snapshot, root, parent, limit, raw_context, upper_bounds)
-        telemetry = build_watchman_telemetry(task_snapshot, root, parent, raw_context, upper_bounds)
-        logs_dir = Path(parent.node_dir) / "agent" / "watchman"
+    ) -> PlannerPacket:
+        prompt = build_planner_prompt(task_snapshot, root, parent, limit, raw_context, upper_bounds)
+        payload = build_planner_payload(task_snapshot, root, parent, limit, raw_context, upper_bounds)
+        telemetry = build_planner_telemetry(task_snapshot, root, parent, raw_context, upper_bounds)
+        logs_dir = Path(parent.node_dir) / "agent" / "planner"
         cwd = Path(getattr(task, "repo_root", Path(task_snapshot.target_path).resolve().parent))
+        sensing_cwd = Path(parent.sandbox_path) if parent.sandbox_path else cwd
+        sensing = SensingRuntime(
+            base_dir=Path(parent.node_dir),
+            cwd=sensing_cwd,
+            task_snapshot=task_snapshot,
+            root=root,
+            parent=parent,
+            task=task,
+        )
         raw = run_json_command(
             self.planner_command,
             cwd=cwd,
@@ -117,6 +126,8 @@ class Watchman:
             payload=payload,
             telemetry=telemetry,
             logs_dir=logs_dir,
+            action="plan",
+            sensing=sensing,
             error_cls=PlannerStepError,
         )
         return self._packet_from_output(
@@ -140,7 +151,7 @@ class Watchman:
         raw_context: dict[str, Any],
         limit: int,
         upper_bounds: dict[str, int],
-    ) -> WatchmanPacket:
+    ) -> PlannerPacket:
         planner_output = raw_context.get("planner_output")
         return self._packet_from_output(
             task=task,
@@ -164,17 +175,23 @@ class Watchman:
         planner_output: Any,
         limit: int,
         upper_bounds: dict[str, int],
-    ) -> WatchmanPacket:
+    ) -> PlannerPacket:
         defaults = task.seed_hypotheses(parent, root, limit)
         normalized_output = planner_output if isinstance(planner_output, dict) else {}
+        planner_rules = _dict_value(raw_context.get("planner_rules"))
         raw_branches = (
             {"branch_cards": planner_output}
             if isinstance(planner_output, list)
             else normalized_output or raw_context
         )
-        branch_cards = self._build_branch_cards(raw_branches, limit, defaults)
+        branch_cards = self._build_branch_cards(raw_branches, limit, defaults, planner_rules)
         if not branch_cards:
-            branch_cards = defaults
+            branch_cards = self._build_branch_cards(
+                {"branch_cards": defaults},
+                limit,
+                defaults,
+                planner_rules,
+            ) or defaults
         static_prior = _dict_value(raw_context.get("static_prior"))
         if not static_prior and not raw_context:
             static_prior = {"source": "seed_hypotheses"}
@@ -186,10 +203,9 @@ class Watchman:
             region_graph,
             raw_context,
         )
-        return WatchmanPacket(
+        return PlannerPacket(
             static_prior=static_prior,
             hardware_context=_dict_value(raw_context.get("hardware_context")),
-            benchmark_context=_dict_value(raw_context.get("benchmark_context")),
             history_context=_dict_value(raw_context.get("history_context")) or _history_context(root),
             region_graph=region_graph,
             bottleneck_card=bottleneck_card,
@@ -203,10 +219,10 @@ class Watchman:
             ),
             branch_cards=branch_cards,
             frozen_decisions=_string_list(
-                (normalized_output or raw_context).get(
+                normalized_output.get(
                     "frozen_decisions",
-                    [
-                        "Treat planner output as the frozen high-level decision layer for this branch.",
+                    _string_list(raw_context.get("frozen_decisions"))
+                    or [
                         "Executor may adapt locally but should not reopen the high-level direction search.",
                     ],
                 )
@@ -218,14 +234,16 @@ class Watchman:
         raw_context: dict[str, Any],
         limit: int,
         defaults: list[Hypothesis],
+        planner_rules: dict[str, Any],
     ) -> list[Hypothesis]:
         cards: list[Hypothesis] = []
-        seen_families: set[str] = set()
+        seen_branch_keys: set[str] = set()
+        allowed_families = set(_string_list(planner_rules.get("allowed_families")))
+        allowed_scopes = _string_list(planner_rules.get("allowed_scopes"))
+        editable_paths = set(_string_list(planner_rules.get("editable_paths")))
         raw_cards = raw_context.get("branch_cards")
         if not isinstance(raw_cards, list):
             raw_cards = raw_context.get("hypotheses")
-        if not isinstance(raw_cards, list):
-            raw_cards = raw_context.get("branch_families")
         if not isinstance(raw_cards, list):
             raw_cards = []
 
@@ -233,9 +251,27 @@ class Watchman:
             default = defaults[index] if index < len(defaults) else None
             hypothesis = _normalize_hypothesis(item, index, default=default)
             family = hypothesis.family.strip() or f"family-{index + 1}"
-            if family in seen_families:
+            if allowed_families and family not in allowed_families and family != "unspecified":
                 continue
-            seen_families.add(family)
+            if allowed_scopes:
+                scope = hypothesis.scope.strip() or (default.scope if default is not None else "") or allowed_scopes[0]
+                if scope not in allowed_scopes:
+                    scope = allowed_scopes[0]
+                hypothesis.scope = scope
+            dedupe_key = (
+                hypothesis.id.strip()
+                or f"{hypothesis.scope.strip()}|{hypothesis.target.strip()}|{hypothesis.core_hypothesis.strip()}"
+                or hypothesis.title.strip()
+                or f"branch-{index + 1}"
+            )
+            if dedupe_key in seen_branch_keys:
+                continue
+            if editable_paths:
+                hints = [hint for hint in hypothesis.editable_path_hints if hint in editable_paths]
+                if not hints:
+                    hints = [hint for hint in (default.editable_path_hints if default is not None else []) if hint in editable_paths]
+                hypothesis.editable_path_hints = hints or sorted(editable_paths)
+            seen_branch_keys.add(dedupe_key)
             hypothesis.family = family
             cards.append(hypothesis)
         return cards
@@ -249,9 +285,14 @@ class Watchman:
         planner_facts: dict[str, Any],
     ) -> BottleneckCard:
         raw = raw_context.get("bottleneck_card")
+        rules = _dict_value(planner_facts.get("planner_rules"))
+        allowed_scopes = _string_list(rules.get("allowed_scopes"))
         if isinstance(raw, dict):
+            scope = str(raw.get("scope", allowed_scopes[0] if allowed_scopes else "kernel"))
+            if allowed_scopes and scope not in allowed_scopes:
+                scope = allowed_scopes[0]
             return BottleneckCard(
-                scope=str(raw.get("scope", "kernel")),
+                scope=scope,
                 target=str(raw.get("target", task_snapshot.target_path)),
                 symptoms=_string_list(raw.get("symptoms")),
                 diagnoses=_string_list(raw.get("diagnoses")),
@@ -261,25 +302,19 @@ class Watchman:
                 rationale=str(raw.get("rationale", "")),
             )
 
-        rules = _dict_value(planner_facts.get("planner_rules"))
         focus = next(
             (region for region in region_graph.regions if region.id == region_graph.focus_region_id),
             region_graph.regions[0],
         )
         symptoms = _string_list(planner_facts.get("symptoms")) or list(focus.signals)
-        diagnoses = _string_list(planner_facts.get("profile_hints"))
-        if not diagnoses:
-            metrics = _dict_value(raw_context.get("benchmark_context")).get("metrics", {})
-            if metrics.get("bottleneck"):
-                diagnoses = [str(metrics.get("bottleneck"))]
         return BottleneckCard(
-            scope=_string_list(rules.get("allowed_scopes"))[0] if _string_list(rules.get("allowed_scopes")) else focus.scope or task_snapshot.task_type,
+            scope=allowed_scopes[0] if allowed_scopes else focus.scope or task_snapshot.task_type,
             target=focus.label or task_snapshot.target_path,
             symptoms=symptoms,
-            diagnoses=diagnoses or ["unknown_bottleneck"],
+            diagnoses=[],
             response_families=[card.family for card in branch_cards],
-            avoid_families=_string_list(rules.get("avoid_families")),
-            rationale=str(planner_facts.get("problem_summary", "Use the current branch cards as the high-level response set.")),
+            avoid_families=[],
+            rationale="",
         )
 
     def _build_search_policy(
@@ -292,12 +327,17 @@ class Watchman:
         planner_facts: dict[str, Any],
     ) -> SearchPolicyHint:
         raw = raw_context.get("search_policy")
+        rules = _dict_value(planner_facts.get("planner_rules"))
+        allowed_scopes = _string_list(rules.get("allowed_scopes")) or [task_snapshot.task_type]
         if isinstance(raw, dict):
             raw_budget = _dict_value(raw.get("branch_budget"))
-            scope = str(raw.get("recommended_scope", task_snapshot.task_type))
+            scope = str(raw.get("recommended_scope", allowed_scopes[0]))
+            if scope not in allowed_scopes:
+                scope = allowed_scopes[0]
+            scope_options = [item for item in _string_list(raw.get("scope_options")) if item in allowed_scopes]
             return SearchPolicyHint(
                 recommended_scope=scope,
-                scope_options=_string_list(raw.get("scope_options")) or [scope],
+                scope_options=scope_options or [scope],
                 exploration_bias=str(raw.get("exploration_bias", "balanced")),
                 branch_budget=BranchBudgetHint(
                     children=_optional_int(raw_budget.get("children", raw.get("suggested_children"))),
@@ -311,21 +351,12 @@ class Watchman:
                 stop_conditions=_string_list(raw.get("stop_conditions")),
             )
 
-        rules = _dict_value(planner_facts.get("planner_rules"))
-        allowed_scopes = _string_list(rules.get("allowed_scopes")) or [task_snapshot.task_type]
-        suggested_children = min(limit, len(branch_cards)) if branch_cards else None
         return SearchPolicyHint(
             recommended_scope=allowed_scopes[0],
             scope_options=allowed_scopes,
             exploration_bias="balanced",
-            branch_budget=BranchBudgetHint(
-                children=suggested_children,
-                beam_width=upper_bounds.get("beam_width"),
-            ),
-            resource_hint=ResourceHint(
-                tier="balanced",
-                notes=["No planner decision available; keep a neutral local search budget."],
-            ),
+            branch_budget=BranchBudgetHint(),
+            resource_hint=ResourceHint(),
         )
 
     def _build_region_graph(
@@ -406,16 +437,36 @@ def _normalize_hypothesis(
     *,
     default: Hypothesis | None = None,
 ) -> Hypothesis:
+    if isinstance(item, Hypothesis):
+        return Hypothesis(
+            id=item.id,
+            title=item.title,
+            core_hypothesis=item.core_hypothesis,
+            scope=item.scope,
+            target=item.target,
+            constraints_summary=item.constraints_summary,
+            editable_path_hints=list(item.editable_path_hints),
+            family=item.family,
+            rationale=item.rationale,
+            target_signals=list(item.target_signals),
+            verification_intent=list(item.verification_intent),
+            supporting_evidence=list(item.supporting_evidence),
+            disallowed_directions=list(item.disallowed_directions),
+        )
+
     if isinstance(item, str):
         return Hypothesis(
             id=default.id if default is not None else f"hypothesis-{index + 1}",
             title=default.title if default is not None else f"Hypothesis {index + 1}",
             core_hypothesis=item.strip(),
+            scope=default.scope if default is not None else "",
+            target=default.target if default is not None else "",
             constraints_summary=default.constraints_summary if default is not None else "",
             editable_path_hints=list(default.editable_path_hints) if default is not None else [],
             family=default.family if default is not None else "unspecified",
             rationale=default.rationale if default is not None else "",
             target_signals=list(default.target_signals) if default is not None else [],
+            verification_intent=list(default.verification_intent) if default is not None else [],
             supporting_evidence=list(default.supporting_evidence) if default is not None else [],
             disallowed_directions=list(default.disallowed_directions) if default is not None else [],
         )
@@ -433,6 +484,8 @@ def _normalize_hypothesis(
         core_hypothesis=str(
             item.get("core_hypothesis", default.core_hypothesis if default is not None else "")
         ).strip(),
+        scope=str(item.get("scope", default.scope if default is not None else "")),
+        target=str(item.get("target", default.target if default is not None else "")),
         constraints_summary=str(
             item.get(
                 "constraints_summary",
@@ -447,6 +500,11 @@ def _normalize_hypothesis(
         family=str(item.get("family", default.family if default is not None else "unspecified")),
         rationale=str(item.get("rationale", default.rationale if default is not None else "")),
         target_signals=_string_list_or_default(item, "target_signals", default.target_signals if default is not None else []),
+        verification_intent=_string_list_or_default(
+            item,
+            "verification_intent",
+            default.verification_intent if default is not None else [],
+        ),
         supporting_evidence=_string_list_or_default(item, "supporting_evidence", default.supporting_evidence if default is not None else []),
         disallowed_directions=_string_list_or_default(item, "disallowed_directions", default.disallowed_directions if default is not None else []),
     )

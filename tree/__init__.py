@@ -1,6 +1,8 @@
 """Tree search framework for AutoKernel and related optimization tasks."""
 
 from .agent import AgentAdapter, CommandAgentAdapter, NoOpAgentAdapter
+from .branch_engine import BranchEngine
+from .sensing import SensingConfig, SensingRuntime
 from .search import TreeSearchEngine
 from .types import (
     BranchBudgetHint,
@@ -19,10 +21,12 @@ from .types import (
     SearchResult,
     TaskSnapshot,
 )
-from .watchman import Watchman, WatchmanPacket
+from .verifier import build_verifier_summary
+from .planner import Planner, PlannerPacket
 
 __all__ = [
     "AgentAdapter",
+    "BranchEngine",
     "BranchBudgetHint",
     "BottleneckCard",
     "CommandAgentAdapter",
@@ -39,8 +43,11 @@ __all__ = [
     "SearchPolicyHint",
     "SearchNode",
     "SearchResult",
+    "SensingConfig",
+    "SensingRuntime",
     "TaskSnapshot",
     "TreeSearchEngine",
-    "Watchman",
-    "WatchmanPacket",
+    "build_verifier_summary",
+    "Planner",
+    "PlannerPacket",
 ]

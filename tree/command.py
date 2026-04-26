@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+import time
 from typing import Any
 
 
@@ -15,6 +16,8 @@ def run_json_command(
     payload: dict[str, Any],
     telemetry: dict[str, Any],
     logs_dir: Path,
+    action: str = "",
+    sensing=None,
     error_cls: type[Exception] = RuntimeError,
 ) -> Any:
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -34,21 +37,34 @@ def run_json_command(
     env["TREE_PAYLOAD_PATH"] = str(payload_path)
     env["TREE_TELEMETRY_PATH"] = str(telemetry_path)
     env["TREE_OUTPUT_PATH"] = str(output_path)
+    if sensing is not None:
+        sensing_paths = sensing.prepare(action or "agent", logs_dir)
+        env["TREE_SENSING_PATH"] = sensing_paths["manifest"]
+        env["TREE_PROBE_REQUESTS_PATH"] = sensing_paths["probe_requests"]
+        env["TREE_PROBE_RESULTS_PATH"] = sensing_paths["probe_results"]
 
-    result = subprocess.run(
-        command,
-        cwd=str(cwd),
-        env=env,
-        shell=True,
-        text=True,
-        capture_output=True,
-    )
-    stdout_path.write_text(result.stdout, encoding="utf-8")
-    stderr_path.write_text(result.stderr, encoding="utf-8")
+    with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open(
+        "w", encoding="utf-8"
+    ) as stderr_handle:
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            env=env,
+            shell=True,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+        )
+        while process.poll() is None:
+            if sensing is not None:
+                sensing.serve_pending(action or "agent", logs_dir)
+            time.sleep(0.05)
+        returncode = process.returncode
+    if sensing is not None:
+        sensing.finalize(action or "agent", logs_dir)
 
-    if result.returncode != 0:
+    if returncode != 0:
         raise error_cls(
-            f"Agent command failed with return code {result.returncode}: {command}",
+            f"Agent command failed with return code {returncode}: {command}",
         )
     if not output_path.exists():
         raise error_cls(f"Agent command did not write {output_path}.")

@@ -13,9 +13,10 @@ from .prompts import (
     build_reflection_payload,
     build_reflection_prompt,
 )
+from .sensing import SensingRuntime
 from .task import OptimizationTask
 from .types import ExecutionResult, Hypothesis, Insight, RootMemory, SearchNode, TaskSnapshot
-from .watchman import WatchmanPacket
+from .planner import PlannerPacket
 
 
 class AgentStepError(RuntimeError):
@@ -31,7 +32,7 @@ class AgentAdapter(abc.ABC):
         root: RootMemory,
         parent: SearchNode,
         limit: int,
-        watchman_packet: WatchmanPacket | None = None,
+        planner_packet: PlannerPacket | None = None,
     ) -> list[Hypothesis]:
         raise NotImplementedError
 
@@ -66,11 +67,11 @@ class NoOpAgentAdapter(AgentAdapter):
         root: RootMemory,
         parent: SearchNode,
         limit: int,
-        watchman_packet: WatchmanPacket | None = None,
+        planner_packet: PlannerPacket | None = None,
     ) -> list[Hypothesis]:
-        if watchman_packet is None:
+        if planner_packet is None:
             return task.seed_hypotheses(parent, root, limit)
-        return watchman_packet.branch_cards[:limit]
+        return planner_packet.branch_cards[:limit]
 
     def execute(
         self,
@@ -160,11 +161,11 @@ class CommandAgentAdapter(AgentAdapter):
         root: RootMemory,
         parent: SearchNode,
         limit: int,
-        watchman_packet: WatchmanPacket | None = None,
+        planner_packet: PlannerPacket | None = None,
     ) -> list[Hypothesis]:
-        if watchman_packet is None:
+        if planner_packet is None:
             return self.fallback.propose(task, task_snapshot, root, parent, limit)
-        return watchman_packet.branch_cards[:limit]
+        return planner_packet.branch_cards[:limit]
 
     def execute(
         self,
@@ -186,7 +187,20 @@ class CommandAgentAdapter(AgentAdapter):
             parent=parent,
             node=node,
         )
-        logs_dir = Path(node.node_dir) / "agent" / "execute"
+        local_iteration = node.planner_context.get("local_iteration")
+        if isinstance(local_iteration, int):
+            logs_dir = Path(node.node_dir) / "agent" / f"execute-{local_iteration:02d}"
+        else:
+            logs_dir = Path(node.node_dir) / "agent" / "execute"
+        sensing = SensingRuntime(
+            base_dir=Path(node.node_dir),
+            cwd=Path(node.sandbox_path),
+            task_snapshot=task_snapshot,
+            root=root,
+            parent=parent,
+            node=node,
+            task=task,
+        )
         raw = self._run_json_command(
             self.executor_command,
             cwd=Path(node.sandbox_path),
@@ -194,6 +208,8 @@ class CommandAgentAdapter(AgentAdapter):
             payload=payload,
             telemetry=telemetry,
             logs_dir=logs_dir,
+            action="execute",
+            sensing=sensing,
         )
         if not isinstance(raw, dict):
             raise AgentStepError("Executor output must be a JSON object.")
@@ -228,6 +244,15 @@ class CommandAgentAdapter(AgentAdapter):
             node=node,
         )
         logs_dir = Path(node.node_dir) / "agent" / "reflect"
+        sensing = SensingRuntime(
+            base_dir=Path(node.node_dir),
+            cwd=self.repo_root,
+            task_snapshot=task_snapshot,
+            root=root,
+            parent=parent,
+            node=node,
+            task=task,
+        )
         raw = self._run_json_command(
             self.reflector_command,
             cwd=self.repo_root,
@@ -235,6 +260,8 @@ class CommandAgentAdapter(AgentAdapter):
             payload=payload,
             telemetry=telemetry,
             logs_dir=logs_dir,
+            action="reflect",
+            sensing=sensing,
         )
         if not isinstance(raw, dict):
             raise AgentStepError("Reflector output must be a JSON object.")
@@ -263,6 +290,8 @@ class CommandAgentAdapter(AgentAdapter):
         payload: dict[str, Any],
         telemetry: dict[str, Any],
         logs_dir: Path,
+        action: str,
+        sensing,
     ) -> Any:
         return run_json_command(
             command,
@@ -271,6 +300,8 @@ class CommandAgentAdapter(AgentAdapter):
             payload=payload,
             telemetry=telemetry,
             logs_dir=logs_dir,
+            action=action,
+            sensing=sensing,
             error_cls=AgentStepError,
         )
 

@@ -19,11 +19,14 @@ class Hypothesis:
     id: str
     title: str
     core_hypothesis: str
+    scope: str = ""
+    target: str = ""
     constraints_summary: str = ""
     editable_path_hints: list[str] = field(default_factory=list)
     family: str = "unspecified"
     rationale: str = ""
     target_signals: list[str] = field(default_factory=list)
+    verification_intent: list[str] = field(default_factory=list)
     supporting_evidence: list[str] = field(default_factory=list)
     disallowed_directions: list[str] = field(default_factory=list)
 
@@ -113,6 +116,9 @@ class TaskSnapshot:
     editable_paths: list[str]
     constraints: list[str]
     reference_paths: list[str]
+    target_kind: str = "artifact"
+    surface_type: str = "workspace"
+    objective_signals: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -128,6 +134,7 @@ class SearchNode:
     execution_result: ExecutionResult | None = None
     evaluation_result: EvaluationResult | None = None
     insight: Insight | None = None
+    planner_context: dict[str, Any] = field(default_factory=dict)
     status: NodeStatus = "queued"
     error: str | None = None
 
@@ -154,7 +161,6 @@ class SearchConfig:
     planner_command: str | None = None
     executor_command: str | None = None
     reflector_command: str | None = None
-    verify_command: str | None = None
     enable_final_verify: bool = False
 
 

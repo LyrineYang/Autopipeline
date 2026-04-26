@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,9 +97,9 @@ class PolicyAwareFakeTask(FakeTask):
         )
         self.search_policy = search_policy
 
-    def watchman_context(self, parent, root, limit, *, upper_bounds=None):
+    def planner_context(self, parent, root, limit, *, upper_bounds=None):
         return {
-            "branch_families": [
+            "branch_cards": [
                 {
                     "id": item.id,
                     "family": item.family,
@@ -122,7 +123,7 @@ class FakeAgent(AgentAdapter):
         root,
         parent: SearchNode,
         limit: int,
-        watchman_packet=None,
+        planner_packet=None,
     ) -> list[Hypothesis]:
         return self.proposals_by_parent.get(parent.id, [])[:limit]
 
@@ -177,19 +178,224 @@ class FailingExecuteAgent(FakeAgent):
         )
 
 
+class LoopAwareFakeTask(FakeTask):
+    def branch_iteration_limit(self, parent, node) -> int:
+        return 3
+
+    def evaluate(self, node: SearchNode) -> EvaluationResult:
+        self.evaluated_node_ids.append(node.id)
+        key = Path(node.candidate_path).read_text(encoding="utf-8").strip()
+        score = self.score_by_hypothesis[key]
+        accepted = key in self.accepted_hypotheses
+        return EvaluationResult(
+            accepted=accepted,
+            score=score,
+            metrics={"score": score, "returncode": 0},
+            summary=f"{key}:{score}",
+            raw_log_paths={},
+        )
+
+
+class PipelineLoopTask(LoopAwareFakeTask):
+    def create_sandbox(self, node: SearchNode, parent: SearchNode | None) -> None:
+        super().create_sandbox(node, parent)
+        pipeline_path = Path(node.sandbox_path) / "pipeline.json"
+        if parent is not None and parent.sandbox_path:
+            source = Path(parent.sandbox_path) / "pipeline.json"
+            if source.exists():
+                pipeline_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+            else:
+                pipeline_path.write_text(json.dumps({"variant": "baseline"}), encoding="utf-8")
+        else:
+            pipeline_path.write_text(json.dumps({"variant": "baseline"}), encoding="utf-8")
+
+    def checkpoint_candidate(self, node: SearchNode, checkpoint_path: Path) -> None:
+        checkpoint_dir = checkpoint_path.parent / checkpoint_path.stem
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path(node.candidate_path), checkpoint_dir / "candidate.txt")
+        shutil.copy2(Path(node.sandbox_path) / "pipeline.json", checkpoint_dir / "pipeline.json")
+
+    def restore_candidate(self, node: SearchNode, checkpoint_path: Path) -> None:
+        checkpoint_dir = checkpoint_path.parent / checkpoint_path.stem
+        shutil.copy2(checkpoint_dir / "candidate.txt", Path(node.candidate_path))
+        shutil.copy2(checkpoint_dir / "pipeline.json", Path(node.sandbox_path) / "pipeline.json")
+
+
+class SurfaceAwarePipelineTask(PipelineLoopTask):
+    def prepare_execution_surface(self, node: SearchNode, parent: SearchNode | None) -> None:
+        candidate_text = Path(node.candidate_path).read_text(encoding="utf-8").strip()
+        (Path(node.sandbox_path) / "surface.txt").write_text(candidate_text, encoding="utf-8")
+        node.planner_context["effective_editable_paths"] = ["candidate.txt", "pipeline.json"]
+
+
+class LoopAgent(FakeAgent):
+    def __init__(self, *, proposals_by_parent: dict[str, list[Hypothesis]], edits_by_iteration: dict[int, str]) -> None:
+        super().__init__(proposals_by_parent=proposals_by_parent)
+        self.edits_by_iteration = edits_by_iteration
+
+    def execute(
+        self,
+        task,
+        task_snapshot,
+        root,
+        parent: SearchNode,
+        node: SearchNode,
+    ) -> ExecutionResult:
+        iteration = int(node.planner_context.get("local_iteration", 1))
+        content = self.edits_by_iteration[iteration]
+        Path(node.candidate_path).write_text(content, encoding="utf-8")
+        return ExecutionResult(
+            status="completed",
+            summary=f"iteration {iteration}",
+            changed=True,
+            candidate_path=node.candidate_path,
+            raw_log_paths={"stdout": str(Path(node.node_dir) / f"execute-{iteration}.log")},
+        )
+
+
+class PipelineLoopAgent(LoopAgent):
+    def execute(
+        self,
+        task,
+        task_snapshot,
+        root,
+        parent: SearchNode,
+        node: SearchNode,
+    ) -> ExecutionResult:
+        result = super().execute(task, task_snapshot, root, parent, node)
+        iteration = int(node.planner_context.get("local_iteration", 1))
+        content = self.edits_by_iteration[iteration]
+        (Path(node.sandbox_path) / "pipeline.json").write_text(
+            json.dumps({"variant": content}),
+            encoding="utf-8",
+        )
+        return result
+
+
+class ExhaustingLoopAgent(LoopAgent):
+    def execute(
+        self,
+        task,
+        task_snapshot,
+        root,
+        parent: SearchNode,
+        node: SearchNode,
+    ) -> ExecutionResult:
+        iteration = int(node.planner_context.get("local_iteration", 1))
+        content = self.edits_by_iteration[iteration]
+        Path(node.candidate_path).write_text(content, encoding="utf-8")
+        return ExecutionResult(
+            status="completed",
+            summary=f"iteration {iteration} exhausted",
+            changed=False,
+            candidate_path=node.candidate_path,
+            raw_log_paths={"stdout": str(Path(node.node_dir) / f"execute-{iteration}.log")},
+        )
+
+
 class TreeSearchEngineTests(unittest.TestCase):
+    def test_same_core_hypothesis_can_expand_different_pipeline_targets(self) -> None:
+        first = Hypothesis(
+            id="stage-a",
+            title="Stage A",
+            core_hypothesis="raise overlap in the hot path",
+            scope="pipeline",
+            target="encoder.block.0",
+            family="runtime_policy",
+        )
+        second = Hypothesis(
+            id="stage-b",
+            title="Stage B",
+            core_hypothesis="raise overlap in the hot path",
+            scope="pipeline",
+            target="encoder.block.1",
+            family="runtime_policy",
+        )
+        task = FakeTask(
+            seed_hypotheses=[first, second],
+            score_by_hypothesis={
+                "Record the unmodified baseline workspace.": 1.0,
+                "raise overlap in the hot path": 2.0,
+            },
+            accepted_hypotheses={
+                "Record the unmodified baseline workspace.",
+                "raise overlap in the hot path",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [first, second]}),
+                config=SearchConfig(beam_width=2, max_rounds=1, children_per_expansion=2),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.total_nodes, 3)
+            self.assertIn("node-0002", engine.nodes)
+            self.assertIn("node-0003", engine.nodes)
+            self.assertEqual(engine.nodes["node-0002"].hypothesis.target, "encoder.block.0")
+            self.assertEqual(engine.nodes["node-0003"].hypothesis.target, "encoder.block.1")
+
+    def test_same_target_same_core_can_expand_when_branch_ids_differ(self) -> None:
+        first = Hypothesis(
+            id="branch-a",
+            title="Variant A",
+            core_hypothesis="raise overlap in the hot path",
+            scope="pipeline",
+            target="encoder.block.0",
+            family="runtime_policy",
+        )
+        second = Hypothesis(
+            id="branch-b",
+            title="Variant B",
+            core_hypothesis="raise overlap in the hot path",
+            scope="pipeline",
+            target="encoder.block.0",
+            family="runtime_policy",
+        )
+        task = FakeTask(
+            seed_hypotheses=[first, second],
+            score_by_hypothesis={
+                "Record the unmodified baseline workspace.": 1.0,
+                "raise overlap in the hot path": 2.0,
+            },
+            accepted_hypotheses={
+                "Record the unmodified baseline workspace.",
+                "raise overlap in the hot path",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [first, second]}),
+                config=SearchConfig(beam_width=2, max_rounds=1, children_per_expansion=2),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.total_nodes, 3)
+            self.assertEqual(engine.nodes["node-0002"].hypothesis.id, "branch-a")
+            self.assertEqual(engine.nodes["node-0003"].hypothesis.id, "branch-b")
+
     def test_engine_updates_best_node_and_prunes_extra_accepted_nodes(self) -> None:
         fast = Hypothesis(id="fast", title="Fast", core_hypothesis="fast-path")
         slow = Hypothesis(id="slow", title="Slow", core_hypothesis="slow-path")
         task = FakeTask(
             seed_hypotheses=[fast, slow],
             score_by_hypothesis={
-                "Record the unmodified baseline candidate.": 1.0,
+                "Record the unmodified baseline workspace.": 1.0,
                 "fast-path": 3.0,
                 "slow-path": 2.0,
             },
             accepted_hypotheses={
-                "Record the unmodified baseline candidate.",
+                "Record the unmodified baseline workspace.",
                 "fast-path",
                 "slow-path",
             },
@@ -222,10 +428,10 @@ class TreeSearchEngineTests(unittest.TestCase):
         task = FakeTask(
             seed_hypotheses=[reject],
             score_by_hypothesis={
-                "Record the unmodified baseline candidate.": 1.0,
+                "Record the unmodified baseline workspace.": 1.0,
                 "reject-path": 0.5,
             },
-            accepted_hypotheses={"Record the unmodified baseline candidate."},
+            accepted_hypotheses={"Record the unmodified baseline workspace."},
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -253,10 +459,10 @@ class TreeSearchEngineTests(unittest.TestCase):
         task = FakeTask(
             seed_hypotheses=[reject],
             score_by_hypothesis={
-                "Record the unmodified baseline candidate.": 1.0,
+                "Record the unmodified baseline workspace.": 1.0,
                 "reject-high-score": 9.0,
             },
-            accepted_hypotheses={"Record the unmodified baseline candidate."},
+            accepted_hypotheses={"Record the unmodified baseline workspace."},
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -280,11 +486,11 @@ class TreeSearchEngineTests(unittest.TestCase):
         task = FakeTask(
             seed_hypotheses=[child],
             score_by_hypothesis={
-                "Record the unmodified baseline candidate.": 1.0,
+                "Record the unmodified baseline workspace.": 1.0,
                 "child-path": 2.0,
             },
             accepted_hypotheses={
-                "Record the unmodified baseline candidate.",
+                "Record the unmodified baseline workspace.",
                 "child-path",
             },
         )
@@ -313,11 +519,11 @@ class TreeSearchEngineTests(unittest.TestCase):
                 Hypothesis(id="seed-1", title="Seed 1", core_hypothesis="seed-improvement"),
             ],
             score_by_hypothesis={
-                "Record the unmodified baseline candidate.": 1.0,
+                "Record the unmodified baseline workspace.": 1.0,
                 "seed-improvement": 1.5,
             },
             accepted_hypotheses={
-                "Record the unmodified baseline candidate.",
+                "Record the unmodified baseline workspace.",
                 "seed-improvement",
             },
         )
@@ -340,18 +546,18 @@ class TreeSearchEngineTests(unittest.TestCase):
             self.assertTrue((run_dir / "tree_events.jsonl").exists())
             self.assertIsNotNone(result.promoted_path)
 
-    def test_watchman_policy_can_tighten_children_beam_and_rounds(self) -> None:
+    def test_planner_policy_can_tighten_children_beam_and_rounds(self) -> None:
         first = Hypothesis(id="first", title="First", core_hypothesis="first-path", family="memory_hierarchy")
         second = Hypothesis(id="second", title="Second", core_hypothesis="second-path", family="parallelization")
         task = PolicyAwareFakeTask(
             seed_hypotheses=[first, second],
             score_by_hypothesis={
-                "Record the unmodified baseline candidate.": 1.0,
+                "Record the unmodified baseline workspace.": 1.0,
                 "first-path": 2.0,
                 "second-path": 3.0,
             },
             accepted_hypotheses={
-                "Record the unmodified baseline candidate.",
+                "Record the unmodified baseline workspace.",
                 "first-path",
                 "second-path",
             },
@@ -383,18 +589,18 @@ class TreeSearchEngineTests(unittest.TestCase):
             self.assertEqual(engine.root_memory.rounds_completed, 1)
             self.assertNotIn("node-0003", engine.nodes)
 
-    def test_watchman_can_keep_beam_wider_than_children_cap(self) -> None:
+    def test_planner_can_keep_beam_wider_than_children_cap(self) -> None:
         first = Hypothesis(id="first", title="First", core_hypothesis="first-path", family="memory_hierarchy")
         second = Hypothesis(id="second", title="Second", core_hypothesis="second-path", family="parallelization")
         task = PolicyAwareFakeTask(
             seed_hypotheses=[first, second],
             score_by_hypothesis={
-                "Record the unmodified baseline candidate.": 1.0,
+                "Record the unmodified baseline workspace.": 1.0,
                 "first-path": 2.0,
                 "second-path": 3.0,
             },
             accepted_hypotheses={
-                "Record the unmodified baseline candidate.",
+                "Record the unmodified baseline workspace.",
                 "first-path",
                 "second-path",
             },
@@ -432,8 +638,8 @@ class TreeSearchEngineTests(unittest.TestCase):
         followup = Hypothesis(id="follow", title="Follow", core_hypothesis="follow-path", family="memory_hierarchy")
 
         class MixedPolicyTask(FakeTask):
-            def watchman_context(self, parent, root, limit, *, upper_bounds=None):
-                if parent.hypothesis.core_hypothesis == "Record the unmodified baseline candidate.":
+            def planner_context(self, parent, root, limit, *, upper_bounds=None):
+                if parent.hypothesis.core_hypothesis == "Record the unmodified baseline workspace.":
                     families = [first, second]
                     budget = 3
                     children = 2
@@ -442,7 +648,7 @@ class TreeSearchEngineTests(unittest.TestCase):
                     budget = 1 if parent.hypothesis.core_hypothesis == "first-path" else 3
                     children = 1
                 return {
-                    "branch_families": [
+                    "branch_cards": [
                         {
                             "id": item.id,
                             "family": item.family,
@@ -466,13 +672,13 @@ class TreeSearchEngineTests(unittest.TestCase):
         task = MixedPolicyTask(
             seed_hypotheses=[first, second],
             score_by_hypothesis={
-                "Record the unmodified baseline candidate.": 1.0,
+                "Record the unmodified baseline workspace.": 1.0,
                 "first-path": 2.0,
                 "second-path": 3.0,
                 "follow-path": 4.0,
             },
             accepted_hypotheses={
-                "Record the unmodified baseline candidate.",
+                "Record the unmodified baseline workspace.",
                 "first-path",
                 "second-path",
                 "follow-path",
@@ -498,6 +704,247 @@ class TreeSearchEngineTests(unittest.TestCase):
 
             self.assertIn("node-0004", engine.nodes)
             self.assertNotIn("node-0005", engine.nodes)
+
+    def test_branch_local_loop_keeps_best_iteration_candidate(self) -> None:
+        branch = Hypothesis(id="branch", title="Branch", core_hypothesis="branch-path")
+        task = LoopAwareFakeTask(
+            seed_hypotheses=[branch],
+            score_by_hypothesis={
+                "baseline": 1.0,
+                "trial-1": 2.0,
+                "trial-2": 3.5,
+                "trial-3": 1.5,
+                "Record the unmodified baseline workspace.": 1.0,
+            },
+            accepted_hypotheses={"baseline", "trial-1", "trial-2", "trial-3", "Record the unmodified baseline workspace."},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=LoopAgent(
+                    proposals_by_parent={"node-0001": [branch]},
+                    edits_by_iteration={1: "trial-1", 2: "trial-2", 3: "trial-3"},
+                ),
+                config=SearchConfig(
+                    beam_width=1,
+                    max_rounds=1,
+                    children_per_expansion=1,
+                    executor_command="executor",
+                ),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.best_node_id, "node-0002")
+            self.assertEqual(engine.nodes["node-0002"].evaluation_result.score, 3.5)
+            self.assertEqual(Path(engine.nodes["node-0002"].candidate_path).read_text(encoding="utf-8"), "trial-2")
+            self.assertEqual(engine.nodes["node-0002"].execution_result.metadata["branch_iterations"], 3)
+            self.assertEqual(
+                [entry["iteration"] for entry in engine.nodes["node-0002"].execution_result.metadata["local_history"]],
+                [1, 2, 3],
+            )
+
+    def test_branch_local_loop_restores_pipeline_surface_checkpoint(self) -> None:
+        branch = Hypothesis(
+            id="branch",
+            title="Branch",
+            core_hypothesis="pipeline-branch",
+            scope="pipeline",
+            target="attention-stack",
+        )
+        task = PipelineLoopTask(
+            seed_hypotheses=[branch],
+            score_by_hypothesis={
+                "baseline": 1.0,
+                "trial-1": 2.0,
+                "trial-2": 3.5,
+                "trial-3": 1.5,
+                "Record the unmodified baseline workspace.": 1.0,
+            },
+            accepted_hypotheses={
+                "baseline",
+                "trial-1",
+                "trial-2",
+                "trial-3",
+                "Record the unmodified baseline workspace.",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=PipelineLoopAgent(
+                    proposals_by_parent={"node-0001": [branch]},
+                    edits_by_iteration={1: "trial-1", 2: "trial-2", 3: "trial-3"},
+                ),
+                config=SearchConfig(
+                    beam_width=1,
+                    max_rounds=1,
+                    children_per_expansion=1,
+                    executor_command="executor",
+                ),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.best_node_id, "node-0002")
+            self.assertEqual(Path(engine.nodes["node-0002"].candidate_path).read_text(encoding="utf-8"), "trial-2")
+            pipeline_state = json.loads(
+                (Path(engine.nodes["node-0002"].sandbox_path) / "pipeline.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(pipeline_state["variant"], "trial-2")
+
+    def test_branch_local_loop_refreshes_derived_surface_after_restore(self) -> None:
+        branch = Hypothesis(
+            id="branch",
+            title="Branch",
+            core_hypothesis="pipeline-branch",
+            scope="pipeline",
+            target="attention-stack",
+        )
+        task = SurfaceAwarePipelineTask(
+            seed_hypotheses=[branch],
+            score_by_hypothesis={
+                "baseline": 1.0,
+                "trial-1": 2.0,
+                "trial-2": 3.5,
+                "trial-3": 1.5,
+                "Record the unmodified baseline workspace.": 1.0,
+            },
+            accepted_hypotheses={
+                "baseline",
+                "trial-1",
+                "trial-2",
+                "trial-3",
+                "Record the unmodified baseline workspace.",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=PipelineLoopAgent(
+                    proposals_by_parent={"node-0001": [branch]},
+                    edits_by_iteration={1: "trial-1", 2: "trial-2", 3: "trial-3"},
+                ),
+                config=SearchConfig(
+                    beam_width=1,
+                    max_rounds=1,
+                    children_per_expansion=1,
+                    executor_command="executor",
+                ),
+                run_dir=run_dir,
+            )
+
+            engine.run()
+
+            surface_text = (Path(engine.nodes["node-0002"].sandbox_path) / "surface.txt").read_text(encoding="utf-8")
+            self.assertEqual(surface_text, "trial-2")
+
+    def test_branch_local_loop_honors_planner_round_limit(self) -> None:
+        branch = Hypothesis(id="branch", title="Branch", core_hypothesis="branch-path", family="memory_hierarchy")
+
+        class RoundLimitedTask(LoopAwareFakeTask):
+            def planner_context(self, parent, root, limit, *, upper_bounds=None):
+                return {
+                    "branch_cards": [
+                        {
+                            "id": branch.id,
+                            "family": branch.family,
+                            "title": branch.title,
+                            "core_hypothesis": branch.core_hypothesis,
+                        }
+                    ],
+                    "search_policy": {
+                        "recommended_scope": "kernel",
+                        "scope_options": ["kernel"],
+                        "exploration_bias": "exploit",
+                        "branch_budget": {
+                            "children": 1,
+                            "beam_width": 1,
+                            "rounds": 1,
+                        },
+                    },
+                }
+
+        task = RoundLimitedTask(
+            seed_hypotheses=[branch],
+            score_by_hypothesis={
+                "baseline": 1.0,
+                "trial-1": 2.0,
+                "trial-2": 3.5,
+                "Record the unmodified baseline workspace.": 1.0,
+            },
+            accepted_hypotheses={"baseline", "trial-1", "trial-2", "Record the unmodified baseline workspace."},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=LoopAgent(
+                    proposals_by_parent={"node-0001": [branch]},
+                    edits_by_iteration={1: "trial-1", 2: "trial-2"},
+                ),
+                config=SearchConfig(
+                    beam_width=1,
+                    max_rounds=1,
+                    children_per_expansion=1,
+                    executor_command="executor",
+                ),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.best_node_id, "node-0002")
+            self.assertEqual(engine.nodes["node-0002"].evaluation_result.score, 2.0)
+            self.assertNotIn("branch_iterations", engine.nodes["node-0002"].execution_result.metadata)
+
+    def test_branch_local_loop_records_exhausted_branch_without_failure(self) -> None:
+        branch = Hypothesis(id="branch", title="Branch", core_hypothesis="branch-path")
+        task = LoopAwareFakeTask(
+            seed_hypotheses=[branch],
+            score_by_hypothesis={
+                "baseline": 1.0,
+                "trial-1": 0.8,
+                "Record the unmodified baseline workspace.": 1.0,
+            },
+            accepted_hypotheses={"baseline", "Record the unmodified baseline workspace."},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=ExhaustingLoopAgent(
+                    proposals_by_parent={"node-0001": [branch]},
+                    edits_by_iteration={1: "trial-1"},
+                ),
+                config=SearchConfig(
+                    beam_width=1,
+                    max_rounds=1,
+                    children_per_expansion=1,
+                    executor_command="executor",
+                ),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.best_node_id, "node-0001")
+            self.assertEqual(engine.nodes["node-0002"].status, "completed")
+            self.assertFalse(engine.nodes["node-0002"].evaluation_result.accepted)
+            self.assertEqual(
+                engine.nodes["node-0002"].execution_result.metadata["branch_outcome"],
+                "exhausted",
+            )
 
 
 if __name__ == "__main__":

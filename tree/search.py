@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .agent import AgentAdapter, AgentStepError
+from .branch_engine import BranchEngine
 from .task import OptimizationTask, validate_sandbox_backend
 from .types import (
     ExecutionResult,
@@ -15,7 +16,7 @@ from .types import (
     SearchNode,
     SearchResult,
 )
-from .watchman import Watchman, WatchmanPacket
+from .planner import Planner, PlannerPacket
 
 
 class TreeSearchEngine:
@@ -41,7 +42,17 @@ class TreeSearchEngine:
         self.frontier_node_ids: list[str] = []
         self.final_result: SearchResult | None = None
         self._node_counter = 0
-        self.watchman = Watchman(planner_command=config.planner_command)
+        self.planner = Planner(planner_command=config.planner_command)
+        self.branch_engine = BranchEngine(
+            task=self.task,
+            agent=self.agent,
+            task_snapshot=self.task_snapshot,
+            root_memory=self.root_memory,
+            config=self.config,
+            log_event=self._log_event,
+            persist_state=self._persist_state,
+            merge_completed=self._merge_completed_node,
+        )
 
     def run(self) -> SearchResult:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +86,7 @@ class TreeSearchEngine:
                     self.root_memory,
                     parent,
                     effective_children,
-                    watchman_packet=packet,
+                    planner_packet=packet,
                 )
                 self._log_event(
                     "proposal_completed",
@@ -93,7 +104,18 @@ class TreeSearchEngine:
                     if self._is_duplicate_hypothesis(hypothesis):
                         continue
                     node = self._create_node(parent, hypothesis)
-                    self._record_hypothesis(node.hypothesis.core_hypothesis)
+                    node.planner_context = {
+                        "recommended_scope": packet.search_policy.recommended_scope if packet.search_policy else "",
+                        "scope_options": packet.search_policy.scope_options if packet.search_policy else [],
+                        "exploration_bias": packet.search_policy.exploration_bias if packet.search_policy else "",
+                        "branch_budget_rounds": packet.search_policy.branch_budget.rounds if packet.search_policy else None,
+                        "stop_conditions": packet.search_policy.stop_conditions if packet.search_policy else [],
+                        "frozen_decisions": list(packet.frozen_decisions),
+                        "branch_scope": hypothesis.scope,
+                        "branch_target": hypothesis.target,
+                        "verification_intent": list(hypothesis.verification_intent),
+                    }
+                    self._record_hypothesis(node.hypothesis)
                     self._run_candidate(node, parent)
                     if node.status == "completed" and node.evaluation_result and node.evaluation_result.accepted:
                         accepted_this_round.append(node)
@@ -162,8 +184,11 @@ class TreeSearchEngine:
             Hypothesis(
                 id="baseline",
                 title="Baseline",
-                core_hypothesis="Record the unmodified baseline candidate.",
+                core_hypothesis="Record the unmodified baseline workspace.",
+                scope=self.task_snapshot.task_type,
+                target=self.task_snapshot.target_path,
                 constraints_summary="No edits.",
+                verification_intent=list(self.task_snapshot.objective_signals),
             ),
         )
         self.task.create_sandbox(baseline, None)
@@ -179,7 +204,7 @@ class TreeSearchEngine:
         self.root_memory.baseline_score = baseline.evaluation_result.score
         self.root_memory.best_score = baseline.evaluation_result.score
         self.root_memory.best_node_id = baseline.id
-        self._record_hypothesis(baseline.hypothesis.core_hypothesis)
+        self._record_hypothesis(baseline.hypothesis)
         self._log_event(
             "baseline_completed",
             {
@@ -212,59 +237,8 @@ class TreeSearchEngine:
         return node
 
     def _run_candidate(self, node: SearchNode, parent: SearchNode) -> None:
-        node.status = "running"
-        self.task.create_sandbox(node, parent)
-        self._persist_state()
-
         try:
-            node.execution_result = self.agent.execute(
-                self.task,
-                self.task_snapshot,
-                self.root_memory,
-                parent,
-                node,
-            )
-            self._log_event(
-                "execution_completed",
-                {
-                    "node_id": node.id,
-                    "parent_id": parent.id,
-                    "status": node.execution_result.status,
-                    "changed": node.execution_result.changed,
-                },
-            )
-            execution_status = node.execution_result.status.lower()
-            if execution_status != "completed":
-                node.status = "failed"
-                node.error = node.execution_result.summary
-            else:
-                node.evaluation_result = self.task.evaluate(node)
-                self._log_event(
-                    "evaluation_completed",
-                    {
-                        "node_id": node.id,
-                        "accepted": node.evaluation_result.accepted,
-                        "score": node.evaluation_result.score,
-                        "summary": node.evaluation_result.summary,
-                    },
-                )
-                node.insight = self.agent.reflect(
-                    self.task,
-                    self.task_snapshot,
-                    self.root_memory,
-                    parent,
-                    node,
-                )
-                self._log_event(
-                    "reflection_completed",
-                    {
-                        "node_id": node.id,
-                        "polarity": node.insight.polarity,
-                        "summary": node.insight.summary,
-                    },
-                )
-                node.status = "completed"
-                self._merge_completed_node(node)
+            self.branch_engine.run(node, parent)
         except AgentStepError as exc:
             node.status = "failed"
             node.error = str(exc)
@@ -307,12 +281,13 @@ class TreeSearchEngine:
             self.root_memory.best_score = node.evaluation_result.score
             self.root_memory.best_node_id = node.id
 
-    def _record_hypothesis(self, hypothesis_summary: str) -> None:
-        if hypothesis_summary not in self.root_memory.explored_hypotheses:
-            self.root_memory.explored_hypotheses.append(hypothesis_summary)
+    def _record_hypothesis(self, hypothesis: Hypothesis) -> None:
+        fingerprint = _hypothesis_fingerprint(hypothesis)
+        if fingerprint and fingerprint not in self.root_memory.explored_hypotheses:
+            self.root_memory.explored_hypotheses.append(fingerprint)
 
     def _is_duplicate_hypothesis(self, hypothesis: Hypothesis) -> bool:
-        return hypothesis.core_hypothesis in self.root_memory.explored_hypotheses
+        return _hypothesis_fingerprint(hypothesis) in self.root_memory.explored_hypotheses
 
     def _persist_state(self) -> None:
         payload = {
@@ -338,11 +313,11 @@ class TreeSearchEngine:
         self._node_counter += 1
         return f"node-{self._node_counter:04d}"
 
-    def _build_parent_packets(self) -> list[tuple[SearchNode, WatchmanPacket]]:
-        packets: list[tuple[SearchNode, WatchmanPacket]] = []
+    def _build_parent_packets(self) -> list[tuple[SearchNode, PlannerPacket]]:
+        packets: list[tuple[SearchNode, PlannerPacket]] = []
         for parent_id in list(self.frontier_node_ids):
             parent = self.nodes[parent_id]
-            packet = self.watchman.build_packet(
+            packet = self.planner.build_packet(
                 self.task,
                 self.task_snapshot,
                 self.root_memory,
@@ -357,19 +332,19 @@ class TreeSearchEngine:
             packets.append((parent, packet))
         return packets
 
-    def _effective_children_limit(self, packet: WatchmanPacket) -> int:
+    def _effective_children_limit(self, packet: PlannerPacket) -> int:
         policy = packet.search_policy
         if policy is None or policy.branch_budget.children is None:
             return self.config.children_per_expansion
         return max(1, min(self.config.children_per_expansion, policy.branch_budget.children))
 
-    def _effective_beam_width(self, packet: WatchmanPacket) -> int:
+    def _effective_beam_width(self, packet: PlannerPacket) -> int:
         policy = packet.search_policy
         if policy is None or policy.branch_budget.beam_width is None:
             return self.config.beam_width
         return max(1, min(self.config.beam_width, policy.branch_budget.beam_width))
 
-    def _should_expand_parent(self, parent: SearchNode, packet: WatchmanPacket) -> bool:
+    def _should_expand_parent(self, parent: SearchNode, packet: PlannerPacket) -> bool:
         policy = packet.search_policy
         if policy is None or policy.branch_budget.rounds is None:
             return True
@@ -378,3 +353,13 @@ class TreeSearchEngine:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _hypothesis_fingerprint(hypothesis: Hypothesis) -> str:
+    hypothesis_id = hypothesis.id.strip()
+    if hypothesis_id:
+        return hypothesis_id
+    scope = hypothesis.scope.strip() or "unspecified"
+    target = hypothesis.target.strip() or "current-target"
+    core = hypothesis.core_hypothesis.strip()
+    return f"{scope}|{target}|{core}" if core else ""
