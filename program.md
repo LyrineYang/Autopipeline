@@ -1,5 +1,8 @@
 # AutoKernel -- Autonomous GPU Kernel Optimization Agent
 
+This file is the long-running agent runtime document for the original AutoKernel path.
+If you are wiring a framework-driven planner / executor / reflector, start with [docs/agent_entry.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/agent_entry.md) and [docs/agent_contract.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/agent_contract.md) instead.
+
 You are an autonomous GPU kernel optimization researcher. You accept a full PyTorch
 model, profile it, identify bottleneck kernels, and optimize each one in priority
 order. You maximize end-to-end model speedup, not just individual kernel throughput.
@@ -30,7 +33,7 @@ The repo now also contains an experimental tree-search adapter for single-kernel
 - scope: one extracted kernel at a time
 - evaluation: still uses fixed `bench.py` and optional `verify.py`
 - search control: beam-style expansion, frontier retention, pruning, and per-node state dumps
-- high-level guidance: `watchman` builds branch identities from profile facts, hardware context, and recent insight history; in the current single-kernel harness it can also consume local evaluator summaries
+- high-level guidance: `planner` builds branch identities from profile facts, hardware context, and recent insight history
 
 Use tree mode when you want:
 
@@ -81,7 +84,7 @@ Expected outputs:
 
 When no external planner / executor / reflector commands are provided, the adapter still runs:
 
-- `watchman` proposes branch cards
+- `planner` proposes branch cards
 - fallback execution preserves the candidate as-is
 - the node still enters benchmark and reflection
 
@@ -100,11 +103,22 @@ Each command receives:
 - `TREE_PROMPT_PATH`
 - `TREE_PAYLOAD_PATH`
 - `TREE_TELEMETRY_PATH`
+- `TREE_SENSING_PATH`
+- `TREE_PROBE_REQUESTS_PATH`
+- `TREE_PROBE_RESULTS_PATH`
 - `TREE_OUTPUT_PATH`
 
-The planner should treat `watchman` as the frozen high-level decision layer.
-If it only returns the older minimal hypothesis schema, the adapter will backfill the missing family and guardrail fields from the matching watchman branch card.
-CLI beam, round, and child settings are upper bounds; `watchman` may suggest a tighter local budget for the current branch.
+This is not just a one-shot read-and-write contract.
+If the agent needs more evidence during the same step, it can:
+
+- read the current sensing manifest from `TREE_SENSING_PATH`
+- write diagnostic requests to `TREE_PROBE_REQUESTS_PATH`
+- read completed probe results from `TREE_PROBE_RESULTS_PATH`
+- continue the same planner / executor / reflector step with that new evidence
+
+The planner command should treat the framework planner as the frozen high-level decision layer.
+If it only returns the older minimal hypothesis schema, the adapter will backfill the missing family and guardrail fields from the matching planner branch card.
+CLI beam, round, and child settings are upper bounds; the planner may suggest a tighter local budget for the current branch.
 
 Minimal example:
 
@@ -124,9 +138,9 @@ uv run tree_optimize.py \
 
 The important role split is:
 
-- `watchman`: freeze high-level branch identity
+- `planner`: freeze high-level branch identity
 - planner: propose branch-local hypotheses under that high-level prior
-- executor: perform one bounded experiment inside the branch
+- executor: perform one local edit step inside a short branch-local keep/revert loop
 - reflector: compress the node result into one reusable insight
 - tree engine: manage beam expansion, pruning, promotion, and state persistence
 

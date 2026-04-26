@@ -3,6 +3,32 @@
 这份文档记录当前关于 tree-search 中 `planner` 角色的共识。
 目标不是给出最终实现细节，而是把已经说清楚的判断固定下来，避免后续讨论反复回到“现在系统到底怎么工作”这个问题。
 
+## 当前代码状态补记
+
+为了让这份共识文档和当前代码保持一致，先补一条当前已经完成的阶段状态：
+
+- 运行时命名已经统一到 `planner`，旧的 `watchman` 不再是当前运行时名词
+- framework core 已经基本从 AutoKernel 单文件 worldview 里退出来：
+  - task protocol 不再假设只能改一个 `kernel.py`
+  - branch-local loop 支持 task 自定义 checkpoint / restore 和 execution surface
+  - branch identity 已经带 `scope / target / verification_intent`
+- sensing 已经同时支持：
+  - built-in inspection probes
+  - built-in `command` / `python` probes
+  - built-in `theoretical_limit_inputs`，用于给 agent 提供稳定的理论上限输入
+- 理论上限或 roofline 计算当前约定为两段式：
+  - sensing / task 提供稳定输入
+  - 具体计算脚本由 agent 用 `python` probe 编写和执行
+- 文档已经分成人类入口和 agent 入口：
+  - `README.md` 继续给人类
+  - `docs/agent_entry.md` 和 `docs/agent_contract.md` 负责 framework-driven agent
+
+当前仍然没有变的边界也要保留清楚：
+
+- bundled task 仍然是 AutoKernel-specific
+- `tree_optimize.py` 仍然是当前 shipped 的 AutoKernel CLI
+- pipeline task 和 pipeline evaluator 仍然没有作为默认实现进入仓库
+
 ## 背景
 
 当前仓库已经有一套可运行的 tree-search 适配层。
@@ -210,6 +236,84 @@ tree search 和 subagent 机制是匹配的，这一点已经明确认可。
 
 这就是 planner 要解决的核心问题。
 
+## Planner / Sensing 简版共识
+
+这部分只记录当前已经落实到代码里的简版共识，避免后续继续把 `planner`、`probe`、`verifier` 混成一层。
+
+### 1. Planner 是高层 agent，不是规则打包层
+
+当前共识已经明确：
+
+- planner 吃事实、规则、历史和感知结果
+- planner 决定方向、scope、分支数量和探索强度
+- executor 负责沿着固定 branch identity 做局部实现
+
+所以 system prior 只保留成 planner 的输入，不再让 task 代码替 planner 做高层判断。
+
+### 2. 感知层只做三件事
+
+当前感知层的职责被刻意收窄成：
+
+- 最小被动观测
+- 运行 agent 定义的诊断请求
+- 统一记录事件和 probe 结果
+
+也就是说，probe 的语义已经固定成：
+
+> probe 是 agent 定义的诊断请求，感知层只负责受控执行和回传。
+
+这避免了把感知层继续做成“预定义工具集合 + 固定控制流”。
+
+### 3. 当前 task probe 的落点
+
+为了保持代码简单，domain-specific probe 不继续放进 sensing core，而是继续落在 task 的 `handle_probe(...)`。
+
+当前 `AutoKernelTask` 已经接了这些最小 probe：
+
+- `gpu_status`
+- `compile_smoke`
+- `compile_report`
+- `python_experiment`
+- `ncu_profile`
+- `nsys_profile`
+- `stage_summary`
+
+补充当前已经形成的五类 probe 视角：
+
+- 硬件画像：`hardware_profile`
+- 软件策略审计：`software_audit`
+- 运行时拆解：`runtime_breakdown`
+- 硬件利用：`ncu_profile` / `nsys_profile`
+- 主动实验：`python_experiment`
+
+这些 probe 都是薄封装：
+
+- 感知层不理解 kernel / pipeline 语义
+- task probe 只负责调用现有工具或脚本
+- 复杂实验内容尽量由 agent 在 request 里决定
+
+### 4. 当前刻意保留的简化
+
+这一阶段有几条刻意不做重的选择：
+
+- 不在 sensing core 里继续加新角色或新协议层
+- 不把 `ncu/nsys/trace` 解析成很重的统一 schema
+- 不让 probe 结果直接进入 acceptance logic
+- 不让 planner probe 直接跑在 repo root，而是绑定当前 branch workspace
+
+当前这版的目标不是“完整 pipeline 反馈系统”，而是先让主动感知闭环可用，同时保持实现足够薄。
+
+### 5. 现在的 verifier 边界
+
+当前 sensing manifest 里的 `verifier` 还是一个轻量摘要器：
+
+- 统计最近 probe 的完成/失败情况
+- 给 planner 一个压缩后的诊断健康视图
+
+它还不是 pipeline-level verifier。
+
+真正的 pipeline verifier 仍然应该建立在后续更完整的 trace / stage timing / end-to-end objective 之上，而不是提前塞进 sensing core。
+
 ## 更强的主张：为什么 Kernel 优化比一般 Agent 任务更适合 Tree Search
 
 如果只说“planner 负责 exploration，agent 负责 exploitation”，这个主张还太弱。
@@ -343,7 +447,7 @@ kernel 优化天然就有一个层级结构：
 我们现在的实现主要验证的是：
 
 - tree search 能否在单-kernel AutoKernel harness 里稳定工作
-- `watchman` 能否给单个 kernel 提供更强的高层先验
+- `planner` 能否给单个 kernel 提供更强的高层先验
 
 但后面的目标不应停在这里。
 
@@ -417,11 +521,11 @@ kernel 优化天然就有一个层级结构：
 1. 先定义 pipeline bottleneck schema
 2. 再定义 diagnosis -> treatment family 的映射
 3. 再把联合 bottleneck 的联合方案放进 branch card
-4. 最后再让 `watchman` 真正按这套 schema 产出 proposal prior
+4. 最后再让 `planner` 真正按这套 schema 产出 proposal prior
 
 这四步里，当前代码只完成到一个更早的中间状态：
 
-- schema 的壳子已经接进 `watchman`
+- schema 的壳子已经接进 `planner`
 - 单-kernel harness 已经能读轻量 pipeline 风格 hints
 - 但真正的 pipeline profiler / task 还没有接上
 
@@ -429,7 +533,7 @@ kernel 优化天然就有一个层级结构：
 
 - 不是让 `bench.py` 再承担更多 prior 角色
 - 而是让未来的 pipeline profiler / trace 分析阶段产出少量稳定字段，例如 `optimization_scope`、`pipeline_region_label`、`upstream_regions`、`downstream_regions`、`profile_bottlenecks`
-- 再由 `watchman` 消费这些字段，生成更合理的 diagnosis 和 branch identity
+- 再由 `planner` 消费这些字段，生成更合理的 diagnosis 和 branch identity
 
 这个顺序的好处是：
 
@@ -786,47 +890,42 @@ kernel 优化并不是事后被树结构“包装”起来的任务。
 
 当前实现刻意保持轻层级。
 
-- 决策层：`watchman` 内部用 `RegionGraph -> BottleneckCard -> Branch Card` 组织思考。
-- 运行层：事实输入 -> `watchman` -> tree controller -> executor -> evaluator / verifier。
+- 决策层：`planner` 内部用 `RegionGraph -> BottleneckCard -> Branch Card` 组织思考。
+- 运行层：事实输入 -> `planner` -> tree controller -> executor -> evaluator / verifier。
 - `RegionGraph` 只回答“问题在哪里”，不做独立控制。
 - `BottleneckCard` 只回答“问题是什么、先试哪类方案”，不保存长日志。
 - prompt 只暴露 focus region 和少量 nearby regions，不把整张图灌给模型。
 
 当前已经做出的关键选择：
 
-- `watchman` 只冻结高层方向，不写代码。
+- `planner` 只冻结高层方向，不写代码。
 - `AutoKernelTask` 仍然是单-kernel harness，只编辑 sandbox-local `kernel.py`。
 - pipeline 风格 hints 已经可以进入 diagnosis，但 response family 仍然裁剪到 kernel-local family。
 - benchmark 在当前 harness 里只是局部 evaluator，不是未来通用 framework 的核心 prior。
 
 ## Pipeline Baseline 还缺什么
 
-新的 pipeline baseline 还缺这几项：
+这里只保留结论，不重复完整列表。
 
-- 真正的 pipeline profiler：稳定产出 `optimization_scope`、`pipeline_region_label`、`upstream_regions`、`downstream_regions`、`profile_bottlenecks`。
-- 独立的 pipeline task：支持 kernel-local、region-local、cross-kernel 三种 edit surface。
-- scope router：判断当前问题该进 kernel、region 还是 pipeline search。
-- pipeline evaluator / verifier：能判断 stage / region / end-to-end 是否真的改善。
+当前判断不变：
 
-当上面四项都具备，并且 `watchman` 能稳定消费这些轻量字段生成 branch identity 时，就可以认为新的 pipeline optimizer baseline 完成。
+- 新的 pipeline baseline 还缺真正的 pipeline profiler、pipeline task、scope router、pipeline evaluator / verifier
+- 这些条件同时满足后，才能说 pipeline optimizer baseline 完成
+
+完整的缺口定义、完成条件、实验矩阵和阶段实验方案，统一以下面这些章节为权威版本：
+
+- [新 Baseline 什么时候算完成](#新-baseline-什么时候算完成)
+- [后续实验矩阵](#后续实验矩阵)
+- [后续实验方案](#后续实验方案)
 
 ## 后续实验矩阵（简版）
 
-建议先固定五条轴：
+这里也只保留引导，不再重复完整实验矩阵。
 
-- Prior 来源：静态结构 / +pipeline profile / +hardware / +history。
-- 优化 scope：kernel / region / pipeline。
-- Branch identity：自由 hypothesis / family-only / family+guardrail。
-- 执行面：单文件 / region-local / cross-kernel。
-- 裁决信号：local micro / stage-region latency / end-to-end。
+建议仍然按阶段做实验，但详细主轴和 phase 设计统一以下面两个章节为准：
 
-建议按阶段做实验：
-
-- Phase 0：保留当前基线（原始 AutoKernel 长循环 vs 当前 single-kernel tree adapter）。
-- Phase 1：只测 prior 是否提升 proposal 质量。
-- Phase 2：只测 scope 路由是否值得。
-- Phase 3：在有 pipeline task 后，再测 pipeline family。
-- Phase 4：最后再测 history / archive。
+- [后续实验矩阵](#后续实验矩阵)
+- [后续实验方案](#后续实验方案)
 
 ## 当前 Hierarchy 总结
 
@@ -834,7 +933,7 @@ kernel 优化并不是事后被树结构“包装”起来的任务。
 
 ### 1. 决策层级
 
-这部分主要存在于 `watchman` 内部，不被拆成很多运行时角色。
+这部分主要存在于 `planner` 内部，不被拆成很多运行时角色。
 
 - `RegionGraph` 回答“问题在哪里”
 - `BottleneckCard` 回答“问题是什么”
@@ -851,7 +950,7 @@ kernel 优化并不是事后被树结构“包装”起来的任务。
 运行时角色仍然保持很少：
 
 - 上游事实输入：今天是 extracted kernel + hardware + local evaluator + history，未来可以换成真正的 pipeline profiler / trace
-- `watchman`：压缩高层先验
+- `planner`：压缩高层先验
 - tree controller：分叉、保留、剪枝、记状态
 - executor：做一次局部实现
 - evaluator / verifier：做外部裁决
@@ -868,7 +967,7 @@ kernel 优化并不是事后被树结构“包装”起来的任务。
 
 1. `RegionGraph` 是轻量对象，不是复杂图系统。
 2. 每个 region 一个 card 就够，先不做更复杂的 region program。
-3. `watchman` 只负责冻结高层方向，不负责写代码。
+3. `planner` 只负责冻结高层方向，不负责写代码。
 4. 当前 `AutoKernelTask` 仍然是单-kernel harness，只编辑 sandbox-local `kernel.py`。
 5. 当前代码已经允许 pipeline 风格 hints 进入 diagnosis，但 response family 仍然裁剪到 kernel-local family。
 6. benchmark 在当前 harness 里是局部 evaluator，不是未来通用 framework 的核心 prior。
@@ -931,7 +1030,7 @@ kernel 优化并不是事后被树结构“包装”起来的任务。
 新的 pipeline baseline 在下面这些条件同时成立时，就算完成：
 
 1. 上游 profiler 能稳定产出轻量字段，而不是长日志。
-2. `watchman` 能消费这些字段，稳定生成 `RegionGraph + BottleneckCard + Branch Card`。
+2. `planner` 能消费这些字段，稳定生成 `RegionGraph + BottleneckCard + Branch Card`。
 3. 系统能明确区分 kernel / region / pipeline 三种 scope。
 4. 不同 scope 能进入对应的 task，而不是都挤进单文件 `kernel.py`。
 5. 至少有一条 pipeline evaluator 路径能判断“这条 branch 是否真的改善了 pipeline bottleneck”。
