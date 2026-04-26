@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import shlex
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .autokernel_probes import detect_hardware_context, run_autokernel_probe
 from .task import OptimizationTask, create_copy_sandbox
 from .types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 
@@ -96,13 +98,17 @@ class AutoKernelTask(OptimizationTask):
                 "speedup_vs_pytorch."
             ),
             target_path=str(self.kernel_file),
+            target_kind="kernel_file",
+            surface_type="single-file-copy",
+            objective_signals=["speedup_vs_pytorch", "correctness"],
             editable_paths=["kernel.py"],
             constraints=[
                 "Do not modify bench.py, verify.py, orchestrate.py, reference.py, or other repo control files.",
-                "Only change the sandbox-local kernel.py candidate.",
+                "Keep code changes inside the generated sandbox surface for the current branch.",
                 "Treat benchmark and verifier output as read-only evidence.",
             ],
             reference_paths=[
+                str(self.repo_root / "program.md"),
                 str(self.repo_root / "bench.py"),
                 str(self.repo_root / "verify.py"),
                 str(self.repo_root / "reference.py"),
@@ -247,8 +253,11 @@ class AutoKernelTask(OptimizationTask):
                     "Adjust launch, block, or tile parameters to better match the current "
                     "bottleneck without changing semantics."
                 ),
+                scope="kernel",
+                target=self.kernel_file.name,
                 constraints_summary="Keep interfaces, numerics, and output shape unchanged.",
                 editable_path_hints=["kernel.py"],
+                verification_intent=["speedup_vs_pytorch", "correctness"],
             ),
             Hypothesis(
                 id="memory-access",
@@ -257,8 +266,11 @@ class AutoKernelTask(OptimizationTask):
                     "Change staging, vectorization, or data movement to improve memory access "
                     "efficiency for this candidate."
                 ),
+                scope="kernel",
+                target=self.kernel_file.name,
                 constraints_summary="Do not change the reference interface or benchmark logic.",
                 editable_path_hints=["kernel.py"],
+                verification_intent=["speedup_vs_pytorch", "correctness"],
             ),
             Hypothesis(
                 id="reduce-overhead",
@@ -267,8 +279,11 @@ class AutoKernelTask(OptimizationTask):
                     "Reduce synchronization, temporary state, or register pressure in the "
                     "current implementation while preserving behavior."
                 ),
+                scope="kernel",
+                target=self.kernel_file.name,
                 constraints_summary="Keep the algorithm local to the current candidate.",
                 editable_path_hints=["kernel.py"],
+                verification_intent=["speedup_vs_pytorch", "correctness"],
             ),
             Hypothesis(
                 id="algorithm-local",
@@ -277,13 +292,62 @@ class AutoKernelTask(OptimizationTask):
                     f"Try one local {kernel_type}-specific algorithmic variant aligned to the "
                     "current bottleneck signal."
                 ),
+                scope="kernel",
+                target=self.kernel_file.name,
                 constraints_summary="Only one focused algorithmic change for this branch.",
                 editable_path_hints=["kernel.py"],
+                verification_intent=["speedup_vs_pytorch", "correctness"],
             ),
         ]
         return hypotheses[:limit]
 
-    def watchman_context(
+    def prepare_execution_surface(self, node: SearchNode, parent: SearchNode | None) -> None:
+        scope = _normalize_scope(node.planner_context.get("recommended_scope"))
+        region_graph = _build_region_graph(
+            kernel_file=self.kernel_file,
+            kernel_type=self.kernel_type,
+            static_prior=self.profile_prior,
+            hardware_context=self._hardware_context(),
+        )
+        focus_region = next(
+            (region for region in region_graph["regions"] if region["id"] == region_graph["focus_region_id"]),
+            region_graph["regions"][0],
+        )
+        scope_summary = _execution_scope_summary(scope, focus_region)
+        context_files: list[str] = []
+        if scope in {"region", "pipeline"}:
+            context_payload = {
+                "scope": scope,
+                "focus_region": focus_region,
+                "adjacent_regions": [
+                    region
+                    for region in region_graph["regions"]
+                    if region["id"] in set(focus_region.get("adjacent", []))
+                ],
+                "profile_hints": _profile_bottleneck_hints(self.profile_prior),
+                "problem_summary": _problem_summary(
+                    kernel_file=self.kernel_file,
+                    kernel_type=self.kernel_type,
+                    static_prior=self.profile_prior,
+                ),
+            }
+            context_path = Path(node.sandbox_path) / f"{scope}_context.json"
+            context_path.write_text(json.dumps(context_payload, indent=2), encoding="utf-8")
+            summary_path = Path(node.sandbox_path) / f"{scope}_context.md"
+            summary_path.write_text(scope_summary + "\n", encoding="utf-8")
+            context_files = [context_path.name, summary_path.name]
+
+        node.planner_context.update(
+            {
+                "effective_scope": scope,
+                "effective_editable_paths": ["kernel.py"],
+                "focus_target": focus_region["label"],
+                "scope_summary": scope_summary,
+                "scope_context_files": context_files,
+            }
+        )
+
+    def planner_context(
         self,
         parent: SearchNode,
         root: RootMemory,
@@ -291,8 +355,8 @@ class AutoKernelTask(OptimizationTask):
         *,
         upper_bounds: dict[str, int] | None = None,
     ) -> dict[str, Any]:
-        benchmark_context = _benchmark_context(parent)
         hardware_context = self._hardware_context()
+        evaluator_prior = _evaluator_prior(parent)
         history_context = {
             "explored_hypotheses": root.explored_hypotheses[-8:],
             "positive_insights": root.positive_insights[-5:],
@@ -304,18 +368,18 @@ class AutoKernelTask(OptimizationTask):
             kernel_type=self.kernel_type,
             static_prior=self.profile_prior,
             hardware_context=hardware_context,
-            benchmark_context=benchmark_context,
+            evaluator_prior=evaluator_prior,
         )
         return {
             "static_prior": self.profile_prior,
             "hardware_context": hardware_context,
-            "benchmark_context": benchmark_context,
+            "evaluator_prior": evaluator_prior,
             "history_context": history_context,
             "region_graph": region_graph,
             "symptoms": _symptoms_from_context(
                 static_prior=self.profile_prior,
                 hardware_context=hardware_context,
-                benchmark_context=benchmark_context,
+                evaluator_prior=evaluator_prior,
                 history_context=history_context,
             ),
             "profile_hints": _profile_bottleneck_hints(self.profile_prior),
@@ -323,22 +387,103 @@ class AutoKernelTask(OptimizationTask):
                 kernel_file=self.kernel_file,
                 kernel_type=self.kernel_type,
                 static_prior=self.profile_prior,
-                benchmark_context=benchmark_context,
-                region_graph=region_graph,
             ),
             "planner_rules": {
-                "allowed_scopes": ["kernel"],
+                "allowed_scopes": ["kernel", "region", "pipeline"],
                 "allowed_families": sorted(_allowed_branch_families_for_task()),
                 "editable_paths": ["kernel.py"],
                 "avoid_families": [],
                 "resource_ceiling": upper_bounds or {},
             },
             "frozen_decisions": [
-                "Current AutoKernelTask edits only sandbox-local kernel.py.",
-                "The planner may use wider pipeline context for diagnosis, but execution must stay inside the single-kernel edit surface.",
+                "Current AutoKernelTask keeps code edits inside the branch-local sandbox surface.",
+                "Region or pipeline scope may widen execution context, but direct code edits still land in the generated sandbox surface.",
                 "Beam, round, and child counts are ceilings; the planner may tighten them but must not exceed them.",
                 "Planner output should freeze the high-level direction so the executor can focus on implementation.",
             ],
+        }
+
+    def branch_iteration_limit(self, parent: SearchNode, node: SearchNode) -> int:
+        if "--quick" in self.bench_args:
+            return 2
+        return 3
+
+    def handle_probe(
+        self,
+        request: dict[str, Any],
+        *,
+        cwd: Path,
+        node: SearchNode | None,
+        parent: SearchNode | None,
+    ) -> dict[str, Any]:
+        return run_autokernel_probe(
+            request,
+            cwd=cwd,
+            repo_root=self.repo_root,
+            bench_args=self.bench_args,
+        )
+
+    def build_python_probe_command(
+        self,
+        *,
+        cwd: Path,
+        script_path: Path,
+        args: list[str],
+    ) -> list[str]:
+        if not (self.repo_root / "pyproject.toml").exists():
+            return ["python3", str(script_path), *args]
+        return [
+            "uv",
+            "run",
+            "--project",
+            str(self.repo_root),
+            "--directory",
+            str(cwd.resolve()),
+            "--no-sync",
+            "python3",
+            str(script_path),
+            *args,
+        ]
+
+    def probe_environment(self, *, cwd: Path) -> dict[str, str]:
+        probe_dir = cwd / ".tree_probe"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            **os.environ,
+            "UV_CACHE_DIR": str((probe_dir / "uv-cache").resolve()),
+        }
+
+    def build_theoretical_limit_inputs(
+        self,
+        *,
+        cwd: Path,
+        node: SearchNode | None,
+        parent: SearchNode | None,
+    ) -> dict[str, Any]:
+        current = node if node is not None else parent
+        observed = {}
+        if current is not None and current.evaluation_result is not None:
+            observed = {
+                "summary": current.evaluation_result.summary,
+                "score": current.evaluation_result.score,
+                "metrics": dict(current.evaluation_result.metrics),
+            }
+        return {
+            "hardware": self._hardware_context(),
+            "workload": {
+                "kernel_type": self.kernel_type,
+                "backend": self.profile_prior.get("backend"),
+                "model_shapes": self.profile_prior.get("model_shapes"),
+                "optimization_scope": self.profile_prior.get("optimization_scope"),
+                "pipeline_region_label": self.profile_prior.get("pipeline_region_label"),
+                "profile_bottlenecks": self.profile_prior.get("profile_bottlenecks", []),
+            },
+            "candidate": {
+                "cwd": str(cwd),
+                "target_path": str(self.kernel_file),
+                "candidate_path": current.candidate_path if current is not None else "",
+            },
+            "observed": observed,
         }
 
     def _prepare_verify_workspace(self, promoted_path: Path) -> Path:
@@ -444,74 +589,13 @@ def extract_profile_prior(path: Path) -> dict[str, Any]:
 
     return prior
 
-
-def detect_hardware_context() -> dict[str, Any]:
-    context: dict[str, Any] = {
-        "gpu_name": "unknown",
-        "gpu_count": 0,
-        "driver_version": "unknown",
-        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", "all"),
-        "torch_cuda_available": False,
-    }
-
-    try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=name,memory.total,driver_version",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-            if lines:
-                first = [part.strip() for part in lines[0].split(",")]
-                context["gpu_count"] = len(lines)
-                context["gpu_name"] = first[0]
-                if len(first) > 1:
-                    context["memory_total_mb"] = float(first[1])
-                if len(first) > 2:
-                    context["driver_version"] = first[2]
-    except OSError:
-        pass
-
-    try:
-        import torch  # type: ignore
-
-        if torch.cuda.is_available():
-            device_index = 0
-            props = torch.cuda.get_device_properties(device_index)
-            context["torch_cuda_available"] = True
-            context["gpu_count"] = max(context.get("gpu_count", 0), torch.cuda.device_count())
-            context["gpu_name"] = props.name
-            context["compute_capability"] = f"{props.major}.{props.minor}"
-            context["memory_total_mb"] = round(props.total_memory / (1024 * 1024), 2)
-    except Exception:
-        pass
-
-    return context
-
-
-def _benchmark_context(parent: SearchNode) -> dict[str, Any]:
-    metrics = dict(parent.evaluation_result.metrics) if parent.evaluation_result is not None else {}
-    return {
-        "score": parent.evaluation_result.score if parent.evaluation_result is not None else None,
-        "accepted": parent.evaluation_result.accepted if parent.evaluation_result is not None else None,
-        "summary": parent.evaluation_result.summary if parent.evaluation_result is not None else "",
-        "metrics": metrics,
-    }
-
-
 def _build_region_graph(
     *,
     kernel_file: Path,
     kernel_type: str,
     static_prior: dict[str, Any],
     hardware_context: dict[str, Any],
-    benchmark_context: dict[str, Any],
+    evaluator_prior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     explicit_regions = static_prior.get("pipeline_regions") or static_prior.get("region_graph")
     if isinstance(explicit_regions, list):
@@ -533,13 +617,13 @@ def _build_region_graph(
         "summary": _region_summary(
             kernel_type=kernel_type,
             static_prior=static_prior,
-            benchmark_context=benchmark_context,
+            evaluator_prior=evaluator_prior,
             scope=scope,
         ),
         "signals": _region_signals(
             static_prior=static_prior,
             hardware_context=hardware_context,
-            benchmark_context=benchmark_context,
+            evaluator_prior=evaluator_prior,
         ),
         "adjacent": [],
     }
@@ -572,10 +656,10 @@ def _region_summary(
     *,
     kernel_type: str,
     static_prior: dict[str, Any],
-    benchmark_context: dict[str, Any],
+    evaluator_prior: dict[str, Any] | None,
     scope: str,
 ) -> str:
-    metrics = _dict_metrics(benchmark_context.get("metrics"))
+    metrics = _dict_metrics((evaluator_prior or {}).get("metrics"))
     bottleneck = str(metrics.get("bottleneck", "unknown")).lower()
     rank = static_prior.get("rank")
     region_label = static_prior.get("pipeline_region_label")
@@ -592,7 +676,7 @@ def _region_signals(
     *,
     static_prior: dict[str, Any],
     hardware_context: dict[str, Any],
-    benchmark_context: dict[str, Any],
+    evaluator_prior: dict[str, Any] | None,
 ) -> list[str]:
     signals: list[str] = []
     signals.append(f"scope={_normalize_scope(static_prior.get('optimization_scope'))}")
@@ -603,44 +687,21 @@ def _region_signals(
     profile_bottlenecks = _profile_bottleneck_hints(static_prior)
     if profile_bottlenecks:
         signals.append(f"profile_bottlenecks={','.join(profile_bottlenecks[:2])}")
-    metrics = _dict_metrics(benchmark_context.get("metrics"))
+    metrics = _dict_metrics((evaluator_prior or {}).get("metrics"))
     if metrics.get("bottleneck"):
         signals.append(f"local_bottleneck={metrics['bottleneck']}")
+    if (evaluator_prior or {}).get("score") is not None:
+        signals.append(f"last_score={evaluator_prior['score']}")
     if hardware_context.get("gpu_name"):
         signals.append(f"gpu={hardware_context['gpu_name']}")
     return signals[:4]
-
-
-def _problem_summary(
-    *,
-    kernel_file: Path,
-    kernel_type: str,
-    static_prior: dict[str, Any],
-    benchmark_context: dict[str, Any],
-    region_graph: dict[str, Any],
-) -> str:
-    scope = _normalize_scope(static_prior.get("optimization_scope"))
-    metrics = _dict_metrics(benchmark_context.get("metrics"))
-    local_bottleneck = str(metrics.get("bottleneck", "unknown")).lower()
-    focus_region = static_prior.get("pipeline_region_label") or kernel_file.name
-    if scope == "pipeline":
-        return (
-            f"Current target sits inside pipeline region {focus_region}. "
-            f"Local benchmark evidence points to {local_bottleneck} pressure, but execution is still single-kernel."
-        )
-    if scope == "region":
-        return (
-            f"Current target is region {focus_region}. "
-            f"Local benchmark evidence points to {local_bottleneck} pressure."
-        )
-    return f"Current target is kernel {kernel_file.name}; local benchmark evidence points to {local_bottleneck} pressure."
 
 
 def _symptoms_from_context(
     *,
     static_prior: dict[str, Any],
     hardware_context: dict[str, Any],
-    benchmark_context: dict[str, Any],
+    evaluator_prior: dict[str, Any] | None = None,
     history_context: dict[str, Any],
 ) -> list[str]:
     symptoms: list[str] = []
@@ -654,20 +715,38 @@ def _symptoms_from_context(
     profile_bottlenecks = _profile_bottleneck_hints(static_prior)
     if profile_bottlenecks:
         symptoms.append(f"profile_bottlenecks={','.join(profile_bottlenecks[:3])}")
-    metrics = _dict_metrics(benchmark_context.get("metrics"))
+    metrics = _dict_metrics((evaluator_prior or {}).get("metrics"))
     if metrics.get("bottleneck"):
         symptoms.append(f"local_bottleneck={metrics['bottleneck']}")
     if metrics.get("score_metric") and metrics.get("score_value") is not None:
         symptoms.append(f"{metrics['score_metric']}={metrics['score_value']}")
+    if (evaluator_prior or {}).get("accepted") is not None:
+        symptoms.append(f"last_accepted={str(bool(evaluator_prior['accepted'])).lower()}")
+    if (evaluator_prior or {}).get("score") is not None:
+        symptoms.append(f"last_score={evaluator_prior['score']}")
     if hardware_context.get("gpu_name"):
         symptoms.append(f"gpu={hardware_context['gpu_name']}")
     if hardware_context.get("compute_capability"):
         symptoms.append(f"compute_capability={hardware_context['compute_capability']}")
     if history_context.get("negative_insights"):
         symptoms.append(f"recent_negative_insights={len(history_context['negative_insights'])}")
-    return symptoms[:6]
+    return symptoms[:8]
+
+
 def _allowed_branch_families_for_task() -> set[str]:
     return set(_KERNEL_LOCAL_FAMILIES)
+
+
+def _evaluator_prior(node: SearchNode) -> dict[str, Any]:
+    if node.evaluation_result is None:
+        return {}
+    return {
+        "accepted": node.evaluation_result.accepted,
+        "score": node.evaluation_result.score,
+        "summary": node.evaluation_result.summary,
+        "metrics": dict(node.evaluation_result.metrics),
+        "raw_log_paths": dict(node.evaluation_result.raw_log_paths),
+    }
 
 
 def _profile_bottleneck_hints(static_prior: dict[str, Any]) -> list[str]:
@@ -679,9 +758,11 @@ def _profile_bottleneck_hints(static_prior: dict[str, Any]) -> list[str]:
     normalized: list[str] = []
     for hint in hints:
         value = _normalize_hint(hint)
-        diagnosis = _diagnosis_from_hint(value) or value
-        if diagnosis and diagnosis not in normalized:
-            normalized.append(diagnosis)
+        canonical = _diagnosis_from_hint(value)
+        if canonical:
+            value = canonical
+        if value and value not in normalized:
+            normalized.append(value)
     return normalized
 
 
@@ -753,6 +834,35 @@ def _normalize_explicit_regions(items: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return regions
+
+
+def _execution_scope_summary(scope: str, focus_region: dict[str, Any]) -> str:
+    label = str(focus_region.get("label", "current target"))
+    if scope == "pipeline":
+        return f"Pipeline-scope branch focused on {label}."
+    if scope == "region":
+        return f"Region-scope branch focused on {label}."
+    return f"Kernel-scope branch focused on {label}."
+
+
+def _problem_summary(
+    *,
+    kernel_file: Path,
+    kernel_type: str,
+    static_prior: dict[str, Any],
+) -> str:
+    scope = _normalize_scope(static_prior.get("optimization_scope"))
+    focus_region = str(static_prior.get("pipeline_region_label") or kernel_file.name)
+    rank = static_prior.get("rank")
+    shape = static_prior.get("model_shape_display")
+    parts = [f"Current target is a hot {kernel_type} kernel"]
+    if rank is not None:
+        parts.append(f"from extracted rank {rank}")
+    if scope != "kernel":
+        parts.append(f"inside {scope} scope around {focus_region}")
+    if shape:
+        parts.append(f"with shape {shape}")
+    return " ".join(parts) + "."
 
 
 def _normalize_scope(value: Any) -> str:

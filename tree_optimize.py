@@ -72,7 +72,6 @@ def main() -> None:
         planner_command=args.planner_command,
         executor_command=args.executor_command,
         reflector_command=args.reflector_command,
-        verify_command=args.verify_command,
         enable_final_verify=bool(args.verify_command),
     )
 
