@@ -2,6 +2,8 @@
 """
 AutoKernel Kernel Extractor -- Generate baseline kernels from profiling results.
 
+Reads pipeline_profile.json from the same directory as the selected profile report when present and copies lightweight pipeline hints into each extracted kernel header.
+
 Usage:
     uv run extract.py                          # extract from workspace/profile_report.json
     uv run extract.py --top 5                  # extract only top-5 kernels
@@ -17,7 +19,10 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from pipeline_profile import pipeline_profile_path_for_report
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -295,6 +300,7 @@ def generate_kernel_file(
     model_name: str,
     gpu_time_ms: float,
     starter_code: str,
+    pipeline_hint: Optional[Dict[str, Any]] = None,
     backend: str = "triton",
 ) -> str:
     """Generate the complete kernel file content for extraction."""
@@ -327,6 +333,20 @@ def generate_kernel_file(
     lines.append(f"Op type: {op_type}")
     lines.append(f"Rank: {rank} ({pct_total}% of GPU time)")
     lines.append(f"Model shape: {shape_display}")
+    if pipeline_hint:
+        if pipeline_hint.get("optimization_scope"):
+            lines.append(f"Optimization scope: {pipeline_hint['optimization_scope']}")
+        if pipeline_hint.get("pipeline_region_label"):
+            lines.append(f"Pipeline region: {pipeline_hint['pipeline_region_label']}")
+        upstream = pipeline_hint.get("upstream_regions", [])
+        if upstream:
+            lines.append(f"Upstream regions: {', '.join(str(item) for item in upstream)}")
+        downstream = pipeline_hint.get("downstream_regions", [])
+        if downstream:
+            lines.append(f"Downstream regions: {', '.join(str(item) for item in downstream)}")
+        bottlenecks = pipeline_hint.get("profile_bottlenecks", [])
+        if bottlenecks:
+            lines.append(f"Profile bottlenecks: {', '.join(str(item) for item in bottlenecks)}")
     lines.append(f"")
     lines.append(f"This kernel was extracted from profiling {model_name}.")
     lines.append(f"The agent optimizes this to maximize throughput at the model-specific shapes.")
@@ -400,6 +420,27 @@ def load_profile_report(path: str) -> Optional[Dict[str, Any]]:
     except (json.JSONDecodeError, IOError) as e:
         print(f"ERROR: Failed to read profile report: {e}")
         return None
+
+
+def load_pipeline_profile(path: str) -> Optional[Dict[str, Any]]:
+    """Load pipeline_profile.json if available. Returns None on failure or absence."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def lookup_pipeline_hint(pipeline_profile: Optional[Dict[str, Any]], rank: int) -> Optional[Dict[str, Any]]:
+    if not pipeline_profile:
+        return None
+    hints = pipeline_profile.get("kernel_hints", {})
+    if not isinstance(hints, dict):
+        return None
+    raw = hints.get(str(rank))
+    return raw if isinstance(raw, dict) else None
 
 
 def get_supported_kernels(report: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -484,6 +525,8 @@ def extract_kernels(
 
     # -- Get supported kernels --
     supported = get_supported_kernels(report)
+    pipeline_profile_path = str(pipeline_profile_path_for_report(Path(report_path)))
+    pipeline_profile = load_pipeline_profile(pipeline_profile_path)
     if not supported:
         print("ERROR: No supported kernels found in profile report.")
         print("       Ensure the profiler marks kernels with autokernel_supported=True.")
@@ -551,6 +594,7 @@ def extract_kernels(
             model_name=model_name,
             gpu_time_ms=gpu_time_ms,
             starter_code=starter_code,
+            pipeline_hint=lookup_pipeline_hint(pipeline_profile, rank),
             backend=backend,
         )
 

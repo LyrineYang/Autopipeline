@@ -1,5 +1,8 @@
 # AutoKernel -- Autonomous GPU Kernel Optimization Agent
 
+This file is the long-running agent runtime document for the original AutoKernel path.
+If you are wiring a framework-driven planner / executor / reflector, start with [docs/agent_entry.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/agent_entry.md) and [docs/agent_contract.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/agent_contract.md) instead.
+
 You are an autonomous GPU kernel optimization researcher. You accept a full PyTorch
 model, profile it, identify bottleneck kernels, and optimize each one in priority
 order. You maximize end-to-end model speedup, not just individual kernel throughput.
@@ -18,6 +21,132 @@ The workflow has three phases:
 
 A typical run covers 5-10 kernels across 10+ hours. You should expect to run 300+ experiments
 total across all kernels.
+
+---
+
+## Experimental Tree Search Mode
+
+This file describes the default long-running single-agent path.
+The repo now also contains an experimental tree-search adapter for single-kernel optimization:
+
+- entrypoint: `uv run tree_optimize.py`
+- scope: one extracted kernel at a time
+- evaluation: still uses fixed `bench.py` and optional `verify.py`
+- search control: beam-style expansion, frontier retention, pruning, and per-node state dumps
+- high-level guidance: `planner` builds branch identities from profile facts, hardware context, and recent insight history
+
+Use tree mode when you want:
+
+- many short, isolated optimization attempts instead of one long conversation
+- per-branch sandboxes and logs
+- an external planner / executor / reflector command bridge
+- a fixed benchmark loop with explicit branch identities
+
+Do not treat tree mode as a replacement for the multi-kernel orchestrator yet.
+It is currently:
+
+- single-kernel only
+- copy-sandbox only
+- no resume
+- able to consume lightweight pipeline-style profile hints, but still limited to kernel-local edits and kernel-local response families
+- best suited for controlled experiments and search-strategy development
+
+### Tree Mode Smoke Tests
+
+Structural smoke test:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+GPU smoke test:
+
+```bash
+uv run prepare.py
+uv run profile.py --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
+uv run extract.py --top 1
+
+uv run tree_optimize.py \
+  --kernel-file workspace/kernel_matmul_1.py \
+  --run-name smoke-tree \
+  --beam-width 1 \
+  --max-rounds 1 \
+  --children-per-expansion 1 \
+  --bench-arg=--quick
+```
+
+Expected outputs:
+
+- `workspace/tree_runs/<timestamp>-<kernel>/search_state.json`
+- `workspace/tree_runs/<timestamp>-<kernel>/tree_events.jsonl`
+- per-node `bench.stdout.log` and `bench.stderr.log`
+- a promoted sibling file next to the source kernel, named `*_optimized.py`
+
+When no external planner / executor / reflector commands are provided, the adapter still runs:
+
+- `planner` proposes branch cards
+- fallback execution preserves the candidate as-is
+- the node still enters benchmark and reflection
+
+This validates the harness and search plumbing, not optimization quality.
+
+### Tree Mode With External Agents
+
+Tree mode can shell out to up to three commands:
+
+- `--planner-command`
+- `--executor-command`
+- `--reflector-command`
+
+Each command receives:
+
+- `TREE_PROMPT_PATH`
+- `TREE_PAYLOAD_PATH`
+- `TREE_TELEMETRY_PATH`
+- `TREE_SENSING_PATH`
+- `TREE_PROBE_REQUESTS_PATH`
+- `TREE_PROBE_RESULTS_PATH`
+- `TREE_OUTPUT_PATH`
+
+This is not just a one-shot read-and-write contract.
+If the agent needs more evidence during the same step, it can:
+
+- read the current sensing manifest from `TREE_SENSING_PATH`
+- write diagnostic requests to `TREE_PROBE_REQUESTS_PATH`
+- read completed probe results from `TREE_PROBE_RESULTS_PATH`
+- continue the same planner / executor / reflector step with that new evidence
+
+The planner command should treat the framework planner as the frozen high-level decision layer.
+If it only returns the older minimal hypothesis schema, the adapter will backfill the missing family and guardrail fields from the matching planner branch card.
+CLI beam, round, and child settings are upper bounds; the planner may suggest a tighter local budget for the current branch.
+
+Minimal example:
+
+```bash
+uv run tree_optimize.py \
+  --kernel-file workspace/kernel_matmul_1.py \
+  --run-name matmul-tree-agent \
+  --beam-width 2 \
+  --max-rounds 3 \
+  --children-per-expansion 2 \
+  --planner-command 'python scripts/tree_agent.py propose' \
+  --executor-command 'python scripts/tree_agent.py execute' \
+  --reflector-command 'python scripts/tree_agent.py reflect'
+```
+
+### Tree Mode Interpretation
+
+The important role split is:
+
+- `planner`: freeze high-level branch identity
+- planner: propose branch-local hypotheses under that high-level prior
+- executor: perform one local edit step inside a short branch-local keep/revert loop
+- reflector: compress the node result into one reusable insight
+- tree engine: manage beam expansion, pruning, promotion, and state persistence
+
+This mode is meant to study search quality, branch diversity, and agent guidance.
+For the broader long-term framework, the key prior should come from pipeline bottleneck understanding and hardware profile, not from benchmark metrics alone.
+The default long-running path in the rest of this file is still the main production workflow.
 
 ---
 
