@@ -152,11 +152,20 @@ class TreeSearchEngine:
         promoted_path = None
         if best_node is not None:
             promoted_path = self.task.promote(best_node, self.root_memory)
-            best_node.status = "promoted"
 
         final_verify = None
+        promotion_verified = True
         if self.config.enable_final_verify:
             final_verify = self.task.final_verify(self.root_memory)
+            if isinstance(final_verify, dict) and final_verify.get("accepted") is False:
+                promotion_verified = False
+
+        if best_node is not None and promoted_path is not None:
+            if promotion_verified:
+                best_node.status = "promoted"
+            else:
+                _discard_promoted_artifact(promoted_path)
+                promoted_path = None
 
         self.final_result = SearchResult(
             run_dir=str(self.run_dir),
@@ -202,8 +211,9 @@ class TreeSearchEngine:
         baseline.status = "completed"
 
         self.root_memory.baseline_score = baseline.evaluation_result.score
-        self.root_memory.best_score = baseline.evaluation_result.score
-        self.root_memory.best_node_id = baseline.id
+        if baseline.evaluation_result.accepted:
+            self.root_memory.best_score = baseline.evaluation_result.score
+            self.root_memory.best_node_id = baseline.id
         self._record_hypothesis(baseline.hypothesis)
         self._log_event(
             "baseline_completed",
@@ -353,6 +363,13 @@ class TreeSearchEngine:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _discard_promoted_artifact(promoted_path: str) -> None:
+    try:
+        Path(promoted_path).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _hypothesis_fingerprint(hypothesis: Hypothesis) -> str:

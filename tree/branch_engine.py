@@ -198,9 +198,23 @@ class BranchEngine:
         node.planner_context["local_history"] = local_history[-5:]
         if best_evaluation is None or best_execution is None:
             if last_evaluation is not None and last_execution is not None:
+                restored_evaluation = self._evaluate_node(node)
+                self.log_event(
+                    "evaluation_completed",
+                    {
+                        "node_id": node.id,
+                        "branch_outcome": "exhausted_restored",
+                        "accepted": restored_evaluation.accepted,
+                        "score": restored_evaluation.score,
+                        "summary": restored_evaluation.summary,
+                    },
+                )
                 node.execution_result = ExecutionResult(
                     status="completed",
-                    summary=f"Branch exhausted after {len(local_history)} local iterations with no accepted improvement.",
+                    summary=(
+                        f"Branch exhausted after {len(local_history)} local iterations with no accepted "
+                        "improvement; restored the previous candidate and pruned this branch."
+                    ),
                     changed=False,
                     candidate_path=node.candidate_path,
                     raw_log_paths=last_execution.raw_log_paths,
@@ -211,25 +225,9 @@ class BranchEngine:
                         "branch_outcome": "exhausted",
                     },
                 )
-                node.evaluation_result = last_evaluation
+                node.evaluation_result = restored_evaluation
                 self._prepare_execution_surface(node, parent)
-                node.insight = self.agent.reflect(
-                    self.task,
-                    self.task_snapshot,
-                    self.root_memory,
-                    parent,
-                    node,
-                )
-                self.log_event(
-                    "reflection_completed",
-                    {
-                        "node_id": node.id,
-                        "polarity": node.insight.polarity,
-                        "summary": node.insight.summary,
-                    },
-                )
-                node.status = "completed"
-                self.merge_completed(node)
+                node.status = "pruned"
                 return
             node.execution_result = ExecutionResult(
                 status="failed",

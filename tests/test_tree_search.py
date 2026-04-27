@@ -112,6 +112,15 @@ class PolicyAwareFakeTask(FakeTask):
         }
 
 
+class RejectingFinalVerifyTask(FakeTask):
+    def final_verify(self, root: RootMemory) -> dict | None:
+        return {
+            "accepted": False,
+            "summary": "final verification failed",
+            "correctness": "FAIL",
+        }
+
+
 class FakeAgent(AgentAdapter):
     def __init__(self, *, proposals_by_parent: dict[str, list[Hypothesis]]) -> None:
         self.proposals_by_parent = proposals_by_parent
@@ -480,6 +489,70 @@ class TreeSearchEngineTests(unittest.TestCase):
             self.assertEqual(engine.root_memory.best_score, 1.0)
             self.assertEqual(engine.nodes["node-0002"].evaluation_result.score, 9.0)
             self.assertFalse(engine.nodes["node-0002"].evaluation_result.accepted)
+
+    def test_rejected_baseline_does_not_block_accepted_child(self) -> None:
+        child = Hypothesis(id="child", title="Child", core_hypothesis="child-path")
+        task = FakeTask(
+            seed_hypotheses=[child],
+            score_by_hypothesis={
+                "Record the unmodified baseline workspace.": 9.0,
+                "child-path": 1.5,
+            },
+            accepted_hypotheses={"child-path"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [child]}),
+                config=SearchConfig(beam_width=1, max_rounds=1, children_per_expansion=1),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(engine.root_memory.baseline_score, 9.0)
+            self.assertEqual(result.best_node_id, "node-0002")
+            self.assertEqual(engine.root_memory.best_score, 1.5)
+            self.assertEqual(Path(result.promoted_path).read_text(encoding="utf-8"), "child-path")
+
+    def test_failed_final_verify_discards_promoted_artifact(self) -> None:
+        child = Hypothesis(id="child", title="Child", core_hypothesis="child-path")
+        task = RejectingFinalVerifyTask(
+            seed_hypotheses=[child],
+            score_by_hypothesis={
+                "Record the unmodified baseline workspace.": 1.0,
+                "child-path": 2.0,
+            },
+            accepted_hypotheses={
+                "Record the unmodified baseline workspace.",
+                "child-path",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [child]}),
+                config=SearchConfig(
+                    beam_width=1,
+                    max_rounds=1,
+                    children_per_expansion=1,
+                    enable_final_verify=True,
+                ),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.best_node_id, "node-0002")
+            self.assertIsNone(result.promoted_path)
+            self.assertFalse(result.final_verify["accepted"])
+            self.assertIsNotNone(task.promoted_path)
+            self.assertFalse(task.promoted_path.exists())
+            self.assertEqual(engine.nodes["node-0002"].status, "completed")
 
     def test_executor_failed_status_short_circuits_evaluate_and_reflect(self) -> None:
         child = Hypothesis(id="child", title="Child", core_hypothesis="child-path")
@@ -939,8 +1012,13 @@ class TreeSearchEngineTests(unittest.TestCase):
             result = engine.run()
 
             self.assertEqual(result.best_node_id, "node-0001")
-            self.assertEqual(engine.nodes["node-0002"].status, "completed")
-            self.assertFalse(engine.nodes["node-0002"].evaluation_result.accepted)
+            self.assertEqual(engine.nodes["node-0002"].status, "pruned")
+            self.assertTrue(engine.nodes["node-0002"].evaluation_result.accepted)
+            self.assertEqual(engine.nodes["node-0002"].evaluation_result.score, 1.0)
+            self.assertEqual(
+                Path(engine.nodes["node-0002"].candidate_path).read_text(encoding="utf-8").strip(),
+                "baseline",
+            )
             self.assertEqual(
                 engine.nodes["node-0002"].execution_result.metadata["branch_outcome"],
                 "exhausted",
