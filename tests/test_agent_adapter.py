@@ -171,6 +171,7 @@ class CommandAgentAdapterTests(unittest.TestCase):
         self.assertTrue((logs_dir / "payload.json").exists())
         self.assertTrue((logs_dir / "telemetry.json").exists())
         self.assertTrue((logs_dir / "output.json").exists())
+        self.assertTrue((logs_dir / "command_status.json").exists())
         self.assertTrue((logs_dir / "sensing.json").exists())
         sensing_manifest = json.loads((logs_dir / "sensing.json").read_text(encoding="utf-8"))
         self.assertIn("verifier", sensing_manifest)
@@ -562,6 +563,56 @@ class CommandAgentAdapterTests(unittest.TestCase):
 
         with self.assertRaises(AgentStepError):
             adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+    def test_command_timeout_stops_executor_and_records_status(self) -> None:
+        script = self._write_script(
+            "slow_executor.py",
+            """
+            import time
+            time.sleep(5)
+            """,
+        )
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            executor_command=self._python_command(script),
+            command_timeout_seconds=0.2,
+        )
+
+        with self.assertRaisesRegex(AgentStepError, "timed out"):
+            adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        status = json.loads(
+            ((Path(self.node.node_dir) / "agent" / "execute" / "command_status.json").read_text(encoding="utf-8"))
+        )
+        self.assertTrue(status["timed_out"])
+        self.assertEqual(status["status"], "timed_out")
+
+    def test_command_cancel_file_stops_executor_and_records_status(self) -> None:
+        script = self._write_script(
+            "cancel_executor.py",
+            """
+            import os
+            import time
+            from pathlib import Path
+
+            Path(os.environ["TREE_CANCEL_PATH"]).write_text("stop", encoding="utf-8")
+            time.sleep(5)
+            """,
+        )
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            executor_command=self._python_command(script),
+            command_timeout_seconds=5,
+        )
+
+        with self.assertRaisesRegex(AgentStepError, "cancelled"):
+            adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        status = json.loads(
+            ((Path(self.node.node_dir) / "agent" / "execute" / "command_status.json").read_text(encoding="utf-8"))
+        )
+        self.assertTrue(status["cancelled"])
+        self.assertEqual(status["status"], "cancelled")
 
     def _write_script(self, name: str, source: str) -> Path:
         path = self.repo_root / name

@@ -36,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--planner-command", default=None)
     parser.add_argument("--executor-command", default=None)
     parser.add_argument("--reflector-command", default=None)
+    parser.add_argument(
+        "--command-timeout-seconds",
+        type=float,
+        default=600,
+        help="Timeout for planner, executor, and reflector commands.",
+    )
     return parser
 
 
@@ -64,6 +70,7 @@ def main() -> None:
         repo_root=repo_root,
         executor_command=args.executor_command,
         reflector_command=args.reflector_command,
+        command_timeout_seconds=args.command_timeout_seconds,
     )
     config = SearchConfig(
         beam_width=args.beam_width,
@@ -73,6 +80,7 @@ def main() -> None:
         executor_command=args.executor_command,
         reflector_command=args.reflector_command,
         enable_final_verify=bool(args.verify_command),
+        command_timeout_seconds=args.command_timeout_seconds,
     )
 
     engine = TreeSearchEngine(

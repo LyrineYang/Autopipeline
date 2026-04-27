@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from tree.sensing import build_sensing_summary
 from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 from tree.verifier import build_verifier_summary
 
@@ -58,20 +59,155 @@ class VerifierTests(unittest.TestCase):
             ),
         )
 
+        sensing_summary = build_sensing_summary(
+            task_snapshot=task_snapshot,
+            recent_probe_results=[],
+            node=node,
+        )
         summary = build_verifier_summary(
             task_snapshot=task_snapshot,
             root=root,
             recent_probe_results=[],
             node=node,
+            sensing_summary=sensing_summary,
         )
 
         self.assertEqual(summary["verdict"], "keep")
         self.assertIn("end_to_end_ms=81.5", summary["evidence"])
         self.assertIn("stage_summary.overlap_ratio=0.72", summary["evidence"])
+        self.assertEqual(summary["objective_evaluation"]["verdict"], "keep")
         self.assertNotIn(
             "Missing objective signals in evaluation metrics: end_to_end_ms, overlap_ratio",
             summary["regressions"],
         )
+
+    def test_pipeline_objective_compares_parent_and_child_metrics(self) -> None:
+        task_snapshot = TaskSnapshot(
+            task_type="pipeline",
+            objective="lower end-to-end latency and improve overlap",
+            target_path="/tmp/pipeline.yaml",
+            editable_paths=["pipeline.yaml"],
+            constraints=[],
+            reference_paths=[],
+            target_kind="pipeline",
+            surface_type="workspace",
+            objective_signals=["end_to_end_ms", "overlap_ratio", "communication_ms"],
+        )
+        parent = SearchNode(
+            id="node-0001",
+            parent_id=None,
+            depth=0,
+            hypothesis=Hypothesis(id="parent", title="Parent", core_hypothesis="baseline"),
+            evaluation_result=EvaluationResult(
+                accepted=True,
+                score=1.0,
+                metrics={
+                    "end_to_end_ms": 100.0,
+                    "stage_summary": {
+                        "overlap_ratio": 0.55,
+                        "communication_ms": 24.0,
+                    },
+                },
+                summary="baseline pipeline",
+            ),
+        )
+        node = SearchNode(
+            id="node-0002",
+            parent_id="node-0001",
+            depth=1,
+            hypothesis=Hypothesis(id="branch", title="Branch", core_hypothesis="improve overlap"),
+            evaluation_result=EvaluationResult(
+                accepted=True,
+                score=1.2,
+                metrics={
+                    "end_to_end_ms": 86.0,
+                    "stage_summary": {
+                        "overlap_ratio": 0.70,
+                        "communication_ms": 18.0,
+                    },
+                },
+                summary="candidate pipeline",
+            ),
+        )
+
+        sensing_summary = build_sensing_summary(
+            task_snapshot=task_snapshot,
+            recent_probe_results=[],
+            parent=parent,
+            node=node,
+        )
+        summary = build_verifier_summary(
+            task_snapshot=task_snapshot,
+            root=RootMemory(objective=task_snapshot.objective, best_score=1.0),
+            recent_probe_results=[],
+            parent=parent,
+            node=node,
+            sensing_summary=sensing_summary,
+        )
+
+        self.assertEqual(summary["verdict"], "keep")
+        self.assertEqual(summary["objective_evaluation"]["verdict"], "keep")
+        self.assertTrue(
+            any("end-to-end latency improved" in item for item in summary["objective_evaluation"]["evidence"])
+        )
+        self.assertTrue(
+            any("overlap ratio improved" in item for item in summary["objective_evaluation"]["evidence"])
+        )
+
+    def test_pipeline_objective_rejects_primary_regression(self) -> None:
+        task_snapshot = TaskSnapshot(
+            task_type="pipeline",
+            objective="lower end-to-end latency",
+            target_path="/tmp/pipeline.yaml",
+            editable_paths=["pipeline.yaml"],
+            constraints=[],
+            reference_paths=[],
+            target_kind="pipeline",
+            objective_signals=["end_to_end_ms"],
+        )
+        parent = SearchNode(
+            id="node-0001",
+            parent_id=None,
+            depth=0,
+            hypothesis=Hypothesis(id="parent", title="Parent", core_hypothesis="baseline"),
+            evaluation_result=EvaluationResult(
+                accepted=True,
+                score=1.0,
+                metrics={"end_to_end_ms": 100.0},
+                summary="baseline pipeline",
+            ),
+        )
+        node = SearchNode(
+            id="node-0002",
+            parent_id="node-0001",
+            depth=1,
+            hypothesis=Hypothesis(id="branch", title="Branch", core_hypothesis="regress latency"),
+            evaluation_result=EvaluationResult(
+                accepted=True,
+                score=1.1,
+                metrics={"end_to_end_ms": 112.0},
+                summary="correct but slower pipeline",
+            ),
+        )
+
+        sensing_summary = build_sensing_summary(
+            task_snapshot=task_snapshot,
+            recent_probe_results=[],
+            parent=parent,
+            node=node,
+        )
+        summary = build_verifier_summary(
+            task_snapshot=task_snapshot,
+            root=RootMemory(objective=task_snapshot.objective),
+            recent_probe_results=[],
+            parent=parent,
+            node=node,
+            sensing_summary=sensing_summary,
+        )
+
+        self.assertEqual(summary["verdict"], "reject")
+        self.assertEqual(summary["objective_evaluation"]["verdict"], "reject")
+        self.assertTrue(any("end-to-end latency regressed" in item for item in summary["regressions"]))
 
     def test_verifier_accepts_task_specific_summary_augmentation(self) -> None:
         task_snapshot = TaskSnapshot(

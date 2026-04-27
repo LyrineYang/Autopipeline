@@ -42,7 +42,10 @@ class TreeSearchEngine:
         self.frontier_node_ids: list[str] = []
         self.final_result: SearchResult | None = None
         self._node_counter = 0
-        self.planner = Planner(planner_command=config.planner_command)
+        self.planner = Planner(
+            planner_command=config.planner_command,
+            command_timeout_seconds=config.command_timeout_seconds,
+        )
         self.branch_engine = BranchEngine(
             task=self.task,
             agent=self.agent,
@@ -367,7 +370,13 @@ def _now_iso() -> str:
 
 def _discard_promoted_artifact(promoted_path: str) -> None:
     try:
-        Path(promoted_path).unlink(missing_ok=True)
+        path = Path(promoted_path)
+        if path.is_dir():
+            import shutil
+
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
     except OSError:
         pass
 

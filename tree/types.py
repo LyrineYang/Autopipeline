@@ -162,6 +162,7 @@ class SearchConfig:
     executor_command: str | None = None
     reflector_command: str | None = None
     enable_final_verify: bool = False
+    command_timeout_seconds: float | None = 600
 
 
 @dataclass(slots=True)

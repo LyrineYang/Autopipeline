@@ -44,8 +44,14 @@ class PlannerStepError(RuntimeError):
 class Planner:
     """High-level planning agent for branch identities and search policy."""
 
-    def __init__(self, *, planner_command: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        planner_command: str | None = None,
+        command_timeout_seconds: float | None = 600,
+    ) -> None:
         self.planner_command = planner_command
+        self.command_timeout_seconds = command_timeout_seconds
 
     def build_packet(
         self,
@@ -129,6 +135,7 @@ class Planner:
             action="plan",
             sensing=sensing,
             error_cls=PlannerStepError,
+            timeout_seconds=self.command_timeout_seconds,
         )
         return self._packet_from_output(
             task=task,

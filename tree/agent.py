@@ -147,11 +147,13 @@ class CommandAgentAdapter(AgentAdapter):
         *,
         executor_command: str | None = None,
         reflector_command: str | None = None,
+        command_timeout_seconds: float | None = 600,
         fallback: AgentAdapter | None = None,
     ) -> None:
         self.repo_root = repo_root
         self.executor_command = executor_command
         self.reflector_command = reflector_command
+        self.command_timeout_seconds = command_timeout_seconds
         self.fallback = fallback or NoOpAgentAdapter()
 
     def propose(
@@ -303,6 +305,7 @@ class CommandAgentAdapter(AgentAdapter):
             action=action,
             sensing=sensing,
             error_cls=AgentStepError,
+            timeout_seconds=self.command_timeout_seconds,
         )
 
 

@@ -24,6 +24,116 @@ class SensingConfig:
     max_grep_matches: int = 20
 
 
+def build_sensing_summary(
+    *,
+    task_snapshot: TaskSnapshot,
+    recent_probe_results: list[dict[str, Any]],
+    parent: SearchNode | None = None,
+    node: SearchNode | None = None,
+) -> dict[str, Any]:
+    """Compress passive and active observations into stable evidence for verifier/planner."""
+    pipeline_evidence = build_pipeline_objective_evidence(
+        task_snapshot=task_snapshot,
+        recent_probe_results=recent_probe_results,
+        parent=parent,
+        node=node,
+    )
+    summary: dict[str, Any] = {
+        "role": "sensing_evidence_summary",
+        "probe_count": len(recent_probe_results),
+    }
+    if pipeline_evidence is not None:
+        summary["objective_evaluation"] = pipeline_evidence
+        summary["pipeline_evidence"] = pipeline_evidence
+    return summary
+
+
+def build_pipeline_objective_evidence(
+    *,
+    task_snapshot: TaskSnapshot,
+    recent_probe_results: list[dict[str, Any]],
+    parent: SearchNode | None = None,
+    node: SearchNode | None = None,
+) -> dict[str, Any] | None:
+    if not _looks_like_pipeline(task_snapshot):
+        return None
+
+    metrics = _pipeline_metrics_from_observations(node=node, recent_probe_results=recent_probe_results)
+    signals = _pipeline_signals(metrics)
+    parent_signals = (
+        _pipeline_signals(parent.evaluation_result.metrics)
+        if parent is not None and parent.evaluation_result is not None
+        else {}
+    )
+    if not signals:
+        return {
+            "verdict": "need_more_evidence",
+            "summary": "Pipeline objective has no usable pipeline metrics yet.",
+            "signals": {},
+            "evidence": [],
+            "regressions": [],
+            "uncertainty": ["Pipeline objective metrics are missing."],
+        }
+
+    objective_order = [
+        signal for signal in task_snapshot.objective_signals if signal in _PIPELINE_SIGNAL_RULES
+    ]
+    for signal in _PIPELINE_SIGNAL_PRIORITY:
+        if signal not in objective_order and signal in signals:
+            objective_order.append(signal)
+
+    evidence: list[str] = []
+    regressions: list[str] = []
+    uncertainty: list[str] = []
+    improved = 0
+    regressed = 0
+    compared = 0
+
+    for signal in objective_order[:6]:
+        current = signals.get(signal)
+        if current is None:
+            continue
+        label, direction = _PIPELINE_SIGNAL_RULES[signal]
+        baseline = parent_signals.get(signal)
+        if baseline is None:
+            evidence.append(f"{label}={current:.3f}")
+            continue
+        compared += 1
+        delta = current - baseline
+        if _is_improved(delta, baseline, direction):
+            improved += 1
+            evidence.append(f"{label} improved from {baseline:.3f} to {current:.3f}")
+        elif _is_regressed(delta, baseline, direction):
+            regressed += 1
+            regressions.append(f"{label} regressed from {baseline:.3f} to {current:.3f}")
+        else:
+            evidence.append(f"{label} stayed near {baseline:.3f}")
+
+    accepted = bool(node.evaluation_result.accepted) if node is not None and node.evaluation_result is not None else False
+    if compared == 0:
+        verdict = "keep" if accepted else "need_more_evidence"
+        uncertainty.append("No parent pipeline metrics are available for comparison.")
+    elif regressed:
+        verdict = "reject"
+    elif improved:
+        verdict = "keep"
+    else:
+        verdict = "need_more_evidence"
+        uncertainty.append("Pipeline metrics changed too little to prove improvement.")
+
+    return {
+        "verdict": verdict,
+        "summary": (
+            f"Pipeline objective compared {compared} signal(s): "
+            f"{improved} improved, {regressed} regressed."
+        ),
+        "signals": signals,
+        "evidence": evidence,
+        "regressions": regressions,
+        "uncertainty": uncertainty,
+    }
+
+
 class SensingRuntime:
     def __init__(
         self,
@@ -58,6 +168,12 @@ class SensingRuntime:
         probe_results_path = logs_dir / "probe_results.json"
         manifest_path = logs_dir / "sensing.json"
         recent_probe_results = self._recent_probe_results()
+        sensing_summary = build_sensing_summary(
+            task_snapshot=self.task_snapshot,
+            recent_probe_results=recent_probe_results,
+            parent=self.parent,
+            node=self.node,
+        )
         verifier = build_verifier_summary(
             task_snapshot=self.task_snapshot,
             root=self.root,
@@ -65,14 +181,12 @@ class SensingRuntime:
             parent=self.parent,
             node=self.node,
             task=self.task,
+            sensing_summary=sensing_summary,
         )
 
-        passive_snapshot_path.write_text(
-            json.dumps(self._passive_snapshot(action), indent=2),
-            encoding="utf-8",
-        )
-        probe_requests_path.write_text("[]", encoding="utf-8")
-        probe_results_path.write_text("[]", encoding="utf-8")
+        _write_json_atomic(passive_snapshot_path, self._passive_snapshot(action))
+        _write_text_atomic(probe_requests_path, "[]")
+        _write_text_atomic(probe_results_path, "[]")
         self._served_requests[str(logs_dir.resolve())] = "[]"
         self._write_manifest(
             action=action,
@@ -81,6 +195,7 @@ class SensingRuntime:
             probe_requests_path=probe_requests_path,
             probe_results_path=probe_results_path,
             recent_probe_results=recent_probe_results,
+            sensing_summary=sensing_summary,
             verifier=verifier,
             probe_result_count=0,
         )
@@ -102,9 +217,15 @@ class SensingRuntime:
 
         results = self._execute_probe_requests(request_text)
         self._served_requests[request_key] = request_text
-        probe_results_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+        _write_json_atomic(probe_results_path, results)
         self._record_probe_results(action, results)
         recent_probe_results = self._recent_probe_results()
+        sensing_summary = build_sensing_summary(
+            task_snapshot=self.task_snapshot,
+            recent_probe_results=recent_probe_results,
+            parent=self.parent,
+            node=self.node,
+        )
         verifier = build_verifier_summary(
             task_snapshot=self.task_snapshot,
             root=self.root,
@@ -112,6 +233,7 @@ class SensingRuntime:
             parent=self.parent,
             node=self.node,
             task=self.task,
+            sensing_summary=sensing_summary,
         )
         self._write_manifest(
             action=action,
@@ -120,6 +242,7 @@ class SensingRuntime:
             probe_requests_path=probe_requests_path,
             probe_results_path=probe_results_path,
             recent_probe_results=recent_probe_results,
+            sensing_summary=sensing_summary,
             verifier=verifier,
             probe_result_count=len(results),
         )
@@ -277,79 +400,78 @@ class SensingRuntime:
         probe_requests_path: Path,
         probe_results_path: Path,
         recent_probe_results: list[dict[str, Any]],
+        sensing_summary: dict[str, Any],
         verifier: dict[str, Any],
         probe_result_count: int,
     ) -> None:
-        manifest_path.write_text(
-            json.dumps(
-                {
-                    "action": action,
-                    "budgets": {
-                        "max_probes_per_action": self.config.max_probes_per_action,
-                        "max_read_lines": self.config.max_read_lines,
-                        "max_read_bytes": self.config.max_read_bytes,
-                        "max_list_entries": self.config.max_list_entries,
-                        "max_grep_matches": self.config.max_grep_matches,
-                    },
-                    "probe_request_model": "agent_defined_requests",
-                    "built_in_probe_handlers": [
-                        "read_text",
-                        "read_json",
-                        "list_dir",
-                        "grep",
-                        "command",
-                        "python",
-                        "theoretical_limit_inputs",
-                    ],
-                    "task_probe_handler": callable(getattr(self.task, "handle_probe", None)),
-                    "probe_guidance": {
-                        "role_split": {
-                            "planner_or_executor": "author diagnostic requests and decide what evidence is needed",
-                            "sensing_runtime": "execute diagnostic requests safely and return structured results",
-                        },
-                        "execution_modes": {
-                            "delegated_runtime": "use built-in handlers or task-specific probes for quick diagnostics",
-                            "planner_authored_experiment": "use the built-in python probe or a task-specific experiment probe for a tiny diagnostic script when static probes are not enough",
-                        },
-                        "examples": [
-                            {"kind": "read_text", "path": "kernel.py", "lines": 20},
-                            {"kind": "command", "argv": ["python3", "--version"]},
-                            {"kind": "python", "code": "print('hello from generic probe')"},
-                            {"kind": "theoretical_limit_inputs"},
-                            {"kind": "hardware_profile"},
-                            {"kind": "software_audit", "paths": ["kernel.py"]},
-                            {"kind": "compile_smoke", "path": "kernel.py"},
-                            {"kind": "compile_report", "path": "kernel.py"},
-                            {"kind": "gpu_status"},
-                            {"kind": "ncu_profile", "metrics": ["sm__throughput.avg.pct_of_peak_sustained_elapsed"]},
-                            {"kind": "nsys_profile"},
-                            {"kind": "stage_summary"},
-                            {"kind": "runtime_breakdown"},
-                            {
-                                "kind": "python_experiment",
-                                "code": "print('hello from probe')",
-                            },
-                        ],
-                        "derived_calculations": {
-                            "theoretical_limit_flow": (
-                                "request theoretical_limit_inputs first, then use the built-in "
-                                "python probe or a task-specific experiment probe to compute "
-                                "roofline/headroom values from those stable inputs"
-                            ),
-                        },
-                    },
-                    "diagnostic_only": True,
-                    "passive_snapshot_path": str(passive_snapshot_path),
-                    "probe_requests_path": str(probe_requests_path),
-                    "probe_results_path": str(probe_results_path),
-                    "probe_result_count": probe_result_count,
-                    "recent_events": self._recent_events(),
-                    "recent_probe_results": recent_probe_results,
-                    "verifier": verifier,
+        _write_json_atomic(
+            manifest_path,
+            {
+                "action": action,
+                "budgets": {
+                    "max_probes_per_action": self.config.max_probes_per_action,
+                    "max_read_lines": self.config.max_read_lines,
+                    "max_read_bytes": self.config.max_read_bytes,
+                    "max_list_entries": self.config.max_list_entries,
+                    "max_grep_matches": self.config.max_grep_matches,
                 },
-                indent=2,
-            ),
-            encoding="utf-8",
+                "probe_request_model": "agent_defined_requests",
+                "built_in_probe_handlers": [
+                    "read_text",
+                    "read_json",
+                    "list_dir",
+                    "grep",
+                    "command",
+                    "python",
+                    "theoretical_limit_inputs",
+                ],
+                "task_probe_handler": callable(getattr(self.task, "handle_probe", None)),
+                "probe_guidance": {
+                    "role_split": {
+                        "planner_or_executor": "author diagnostic requests and decide what evidence is needed",
+                        "sensing_runtime": "execute diagnostic requests safely and return structured results",
+                    },
+                    "execution_modes": {
+                        "delegated_runtime": "use built-in handlers or task-specific probes for quick diagnostics",
+                        "planner_authored_experiment": "use the built-in python probe or a task-specific experiment probe for a tiny diagnostic script when static probes are not enough",
+                    },
+                    "examples": [
+                        {"kind": "read_text", "path": "kernel.py", "lines": 20},
+                        {"kind": "command", "argv": ["python3", "--version"]},
+                        {"kind": "python", "code": "print('hello from generic probe')"},
+                        {"kind": "theoretical_limit_inputs"},
+                        {"kind": "hardware_profile"},
+                        {"kind": "software_audit", "paths": ["kernel.py"]},
+                        {"kind": "compile_smoke", "path": "kernel.py"},
+                        {"kind": "compile_report", "path": "kernel.py"},
+                        {"kind": "gpu_status"},
+                        {"kind": "ncu_profile", "metrics": ["sm__throughput.avg.pct_of_peak_sustained_elapsed"]},
+                        {"kind": "nsys_profile"},
+                        {"kind": "stage_summary"},
+                        {"kind": "runtime_breakdown"},
+                        {
+                            "kind": "python_experiment",
+                            "code": "print('hello from probe')",
+                        },
+                    ],
+                    "derived_calculations": {
+                        "theoretical_limit_flow": (
+                            "request theoretical_limit_inputs first, then use the built-in "
+                            "python probe or a task-specific experiment probe to compute "
+                            "roofline/headroom values from those stable inputs"
+                        ),
+                    },
+                },
+                "diagnostic_only": True,
+                "passive_snapshot_path": str(passive_snapshot_path),
+                "probe_requests_path": str(probe_requests_path),
+                "probe_results_path": str(probe_results_path),
+                "probe_result_count": probe_result_count,
+                "recent_events": self._recent_events(),
+                "recent_probe_results": recent_probe_results,
+                "evidence_summary": sensing_summary,
+                "verifier": verifier,
+            },
         )
 
     def _probe_read_text(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -574,6 +696,117 @@ class SensingRuntime:
             return []
         return rows[-limit:]
 
+
+_PIPELINE_SIGNAL_RULES: dict[str, tuple[str, str]] = {
+    "end_to_end_ms": ("end-to-end latency", "lower"),
+    "step_time_ms": ("step latency", "lower"),
+    "latency_ms": ("latency", "lower"),
+    "throughput": ("throughput", "higher"),
+    "tokens_per_second": ("tokens per second", "higher"),
+    "cost_per_token": ("cost per token", "lower"),
+    "stage_imbalance": ("stage imbalance", "lower"),
+    "slowest_stage_ms": ("slowest stage latency", "lower"),
+    "communication_ms": ("communication time", "lower"),
+    "sync_ms": ("sync time", "lower"),
+    "memcpy_ms": ("memcpy time", "lower"),
+    "overlap_ratio": ("overlap ratio", "higher"),
+    "memory_headroom": ("memory headroom", "higher"),
+    "memory_headroom_pct": ("memory headroom", "higher"),
+    "hardware_fit": ("hardware fit", "higher"),
+    "gpu_utilization": ("GPU utilization", "higher"),
+}
+
+_PIPELINE_SIGNAL_PRIORITY = [
+    "end_to_end_ms",
+    "step_time_ms",
+    "throughput",
+    "tokens_per_second",
+    "cost_per_token",
+    "stage_imbalance",
+    "slowest_stage_ms",
+    "communication_ms",
+    "sync_ms",
+    "memcpy_ms",
+    "overlap_ratio",
+    "memory_headroom",
+    "memory_headroom_pct",
+    "hardware_fit",
+    "gpu_utilization",
+]
+
+
+def _looks_like_pipeline(task_snapshot: TaskSnapshot) -> bool:
+    values = {
+        task_snapshot.task_type,
+        task_snapshot.target_kind,
+        task_snapshot.surface_type,
+        *task_snapshot.objective_signals,
+    }
+    return bool(values & {"pipeline", "stage", "end_to_end_ms", "overlap_ratio", "communication_ms"})
+
+
+def _pipeline_metrics_from_observations(
+    *,
+    node: SearchNode | None,
+    recent_probe_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    if node is not None and node.evaluation_result is not None:
+        metrics.update(node.evaluation_result.metrics)
+    for result in recent_probe_results:
+        if result.get("status") != "completed":
+            continue
+        data = result.get("data")
+        if isinstance(data, dict):
+            _merge_pipeline_metrics(metrics, data)
+    return metrics
+
+
+def _merge_pipeline_metrics(metrics: dict[str, Any], data: dict[str, Any]) -> None:
+    nested_metrics = data.get("metrics")
+    if isinstance(nested_metrics, dict):
+        metrics.update(nested_metrics)
+    nested_stage = data.get("stage_summary")
+    if isinstance(nested_stage, dict):
+        stage_summary = metrics.setdefault("stage_summary", {})
+        if isinstance(stage_summary, dict):
+            stage_summary.update(nested_stage)
+    for key in _PIPELINE_SIGNAL_RULES:
+        if key in data:
+            metrics[key] = data[key]
+
+
+def _pipeline_signals(metrics: dict[str, Any]) -> dict[str, float]:
+    signals: dict[str, float] = {}
+    stage_summary = metrics.get("stage_summary")
+    stage_metrics = stage_summary if isinstance(stage_summary, dict) else {}
+    for key in _PIPELINE_SIGNAL_RULES:
+        value = metrics.get(key)
+        if value is None:
+            value = stage_metrics.get(key)
+        parsed = _optional_float(value)
+        if parsed is not None:
+            signals[key] = parsed
+    return signals
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_improved(delta: float, baseline: float, direction: str) -> bool:
+    threshold = max(abs(baseline) * 0.005, 1e-9)
+    return delta < -threshold if direction == "lower" else delta > threshold
+
+
+def _is_regressed(delta: float, baseline: float, direction: str) -> bool:
+    threshold = max(abs(baseline) * 0.005, 1e-9)
+    return delta > threshold if direction == "lower" else delta < -threshold
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -590,3 +823,14 @@ def _safe_timeout(value: Any) -> int:
     except (TypeError, ValueError):
         return 30
     return max(1, timeout)
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    _write_text_atomic(path, json.dumps(payload, indent=2))
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(text, encoding="utf-8")
+    tmp_path.replace(path)

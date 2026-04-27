@@ -13,10 +13,12 @@ def build_verifier_summary(
     parent: SearchNode | None = None,
     node: SearchNode | None = None,
     task: Any | None = None,
+    sensing_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     completed = [item for item in recent_probe_results if item.get("status") == "completed"]
     failed = [item for item in recent_probe_results if item.get("status") == "failed"]
     rejected = [item for item in recent_probe_results if item.get("status") == "rejected"]
+    objective_evaluation = _objective_evaluation_from_sensing(sensing_summary)
 
     evidence = _summaries(completed, limit=4)
     regressions = _summaries(failed + rejected, limit=4)
@@ -42,6 +44,16 @@ def build_verifier_summary(
         )
         evidence.extend(metric_evidence)
         regressions.extend(metric_regressions)
+        if objective_evaluation:
+            evidence.extend(_string_list(objective_evaluation.get("evidence")))
+            regressions.extend(_string_list(objective_evaluation.get("regressions")))
+            uncertainty.extend(_string_list(objective_evaluation.get("uncertainty")))
+            objective_verdict = str(objective_evaluation.get("verdict", "need_more_evidence"))
+            if objective_verdict == "reject":
+                verdict = "reject"
+                status = "warning" if status == "healthy" else status
+            elif verdict != "reject":
+                verdict = objective_verdict
     elif failed and not completed:
         verdict = "need_more_evidence"
         status = "blocked"
@@ -84,6 +96,7 @@ def build_verifier_summary(
         "evidence": _dedupe(evidence)[:5],
         "regressions": _dedupe(regressions)[:5],
         "uncertainty": _dedupe(uncertainty)[:5],
+        "objective_evaluation": objective_evaluation,
         "probe_health": {
             "probe_count": len(recent_probe_results),
             "completed_count": len(completed),
@@ -156,6 +169,18 @@ def _metric_lines(*, node: SearchNode, objective_signals: list[str]) -> tuple[li
             f"Missing objective signals in evaluation metrics: {', '.join(missing[:4])}"
         )
     return _dedupe(evidence), regressions
+
+
+def _objective_evaluation_from_sensing(sensing_summary: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(sensing_summary, dict):
+        return None
+    objective = sensing_summary.get("objective_evaluation")
+    if isinstance(objective, dict):
+        return objective
+    pipeline = sensing_summary.get("pipeline_evidence")
+    if isinstance(pipeline, dict):
+        return pipeline
+    return None
 
 
 def _string_list(value: Any) -> list[str]:

@@ -2,7 +2,8 @@
 
 from .agent import AgentAdapter, CommandAgentAdapter, NoOpAgentAdapter
 from .branch_engine import BranchEngine
-from .sensing import SensingConfig, SensingRuntime
+from .pipeline import PipelineSpec, PipelineTask
+from .sensing import SensingConfig, SensingRuntime, build_sensing_summary
 from .search import TreeSearchEngine
 from .types import (
     BranchBudgetHint,
@@ -50,4 +51,7 @@ __all__ = [
     "build_verifier_summary",
     "Planner",
     "PlannerPacket",
+    "PipelineSpec",
+    "PipelineTask",
+    "build_sensing_summary",
 ]
