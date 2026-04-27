@@ -163,6 +163,8 @@ class SearchConfig:
     reflector_command: str | None = None
     enable_final_verify: bool = False
     command_timeout_seconds: float | None = 600
+    max_agent_calls: int | None = None
+    max_probe_calls: int | None = None
 
 
 @dataclass(slots=True)

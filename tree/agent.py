@@ -148,13 +148,18 @@ class CommandAgentAdapter(AgentAdapter):
         executor_command: str | None = None,
         reflector_command: str | None = None,
         command_timeout_seconds: float | None = 600,
+        budget_ledger: Any | None = None,
         fallback: AgentAdapter | None = None,
     ) -> None:
         self.repo_root = repo_root
         self.executor_command = executor_command
         self.reflector_command = reflector_command
         self.command_timeout_seconds = command_timeout_seconds
+        self.budget_ledger = budget_ledger
         self.fallback = fallback or NoOpAgentAdapter()
+
+    def set_budget_ledger(self, budget_ledger: Any) -> None:
+        self.budget_ledger = budget_ledger
 
     def propose(
         self,
@@ -202,6 +207,7 @@ class CommandAgentAdapter(AgentAdapter):
             parent=parent,
             node=node,
             task=task,
+            budget_ledger=self.budget_ledger,
         )
         raw = self._run_json_command(
             self.executor_command,
@@ -254,6 +260,7 @@ class CommandAgentAdapter(AgentAdapter):
             parent=parent,
             node=node,
             task=task,
+            budget_ledger=self.budget_ledger,
         )
         raw = self._run_json_command(
             self.reflector_command,
@@ -306,6 +313,7 @@ class CommandAgentAdapter(AgentAdapter):
             sensing=sensing,
             error_cls=AgentStepError,
             timeout_seconds=self.command_timeout_seconds,
+            budget_ledger=self.budget_ledger,
         )
 
 

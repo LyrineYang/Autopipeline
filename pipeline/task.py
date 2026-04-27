@@ -10,10 +10,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .agent import AgentAdapter
-from .search import TreeSearchEngine
-from .task import OptimizationTask
-from .types import (
+from tree.agent import AgentAdapter
+from tree.search import TreeSearchEngine
+from tree.task import OptimizationTask
+from tree.types import (
     EvaluationResult,
     ExecutionResult,
     Hypothesis,

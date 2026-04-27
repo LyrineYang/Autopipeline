@@ -180,6 +180,22 @@ def build_planner_prompt(
             facts_summary.append(f"Allowed families: {', '.join(str(item) for item in allowed_families[:8])}")
     if raw_context.get("problem_summary"):
         facts_summary.append(f"Problem summary: {raw_context['problem_summary']}")
+    budget_context = raw_context.get("budget_context")
+    if isinstance(budget_context, dict):
+        agent_usage = budget_context.get("agent_usage")
+        if isinstance(agent_usage, dict):
+            facts_summary.append(
+                "Agent budget: "
+                f"calls={agent_usage.get('agent_calls')}, "
+                f"remaining={agent_usage.get('remaining_agent_calls')}, "
+                f"tokens={agent_usage.get('total_tokens')}"
+            )
+        recommendations = budget_context.get("recommendations")
+        if isinstance(recommendations, list) and recommendations:
+            facts_summary.append(
+                "Budget recommendations: "
+                + "; ".join(str(item) for item in recommendations[:4])
+            )
     return (
         "You are the high-level planner for one search node.\n"
         "Return JSON only via TREE_OUTPUT_PATH.\n"

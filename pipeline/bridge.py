@@ -11,7 +11,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from tree.agent import CommandAgentAdapter
-from tree.pipeline import (
+from pipeline.task import (
     PipelineSpec,
     PipelineTask,
     default_pipeline_run_dir,
@@ -50,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--executor-command", default=None)
     run_p.add_argument("--reflector-command", default=None)
     run_p.add_argument("--command-timeout-seconds", type=float, default=600)
+    run_p.add_argument("--max-agent-calls", type=int, default=None)
+    run_p.add_argument("--max-probe-calls", type=int, default=None)
 
     smoke_p = sub.add_parser("smoke", help="Run the built-in pipeline smoke path")
     smoke_p.add_argument(
@@ -107,6 +109,8 @@ def main() -> None:
                 reflector_command=args.reflector_command,
                 enable_final_verify=bool(spec.final_verify_command),
                 command_timeout_seconds=args.command_timeout_seconds,
+                max_agent_calls=args.max_agent_calls,
+                max_probe_calls=args.max_probe_calls,
             ),
             run_dir=run_dir,
         )

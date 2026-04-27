@@ -21,6 +21,7 @@ def run_json_command(
     sensing=None,
     error_cls: type[Exception] = RuntimeError,
     timeout_seconds: float | None = 600,
+    budget_ledger: Any | None = None,
 ) -> Any:
     logs_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = logs_dir / "prompt.txt"
@@ -92,36 +93,45 @@ def run_json_command(
     duration_seconds = round(time.monotonic() - started_at, 3)
     if returncode is None:
         returncode = process.poll()
-    _write_json_atomic(
-        status_path,
-        {
-            "status": "timed_out" if timed_out else "cancelled" if cancelled else "completed",
-            "action": action or "agent",
-            "returncode": returncode,
-            "duration_seconds": duration_seconds,
-            "timeout_seconds": timeout_seconds,
-            "timed_out": timed_out,
-            "cancelled": cancelled,
-            "cancel_path": str(cancel_path),
-        },
-    )
+    status_payload = {
+        "status": "timed_out" if timed_out else "cancelled" if cancelled else "completed",
+        "action": action or "agent",
+        "returncode": returncode,
+        "duration_seconds": duration_seconds,
+        "timeout_seconds": timeout_seconds,
+        "timed_out": timed_out,
+        "cancelled": cancelled,
+        "cancel_path": str(cancel_path),
+    }
+    _write_json_atomic(status_path, status_payload)
     if timed_out:
+        _record_budget_command(budget_ledger, status_payload, None)
         raise error_cls(
             f"Agent command timed out after {timeout_seconds} seconds: {command}",
         )
     if cancelled:
+        _record_budget_command(budget_ledger, status_payload, None)
         raise error_cls(f"Agent command was cancelled via {cancel_path}: {command}")
     if returncode != 0:
+        _record_budget_command(budget_ledger, status_payload, None)
         raise error_cls(
             f"Agent command failed with return code {returncode}: {command}",
         )
     if not output_path.exists():
+        status_payload["status"] = "missing_output"
+        _write_json_atomic(status_path, status_payload)
+        _record_budget_command(budget_ledger, status_payload, None)
         raise error_cls(f"Agent command did not write {output_path}.")
 
     try:
-        return json.loads(output_path.read_text(encoding="utf-8"))
+        output = json.loads(output_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
+        status_payload["status"] = "invalid_output"
+        _write_json_atomic(status_path, status_payload)
+        _record_budget_command(budget_ledger, status_payload, None)
         raise error_cls(f"Agent command wrote invalid JSON: {exc}") from exc
+    _record_budget_command(budget_ledger, status_payload, output)
+    return output
 
 
 def logs_for(logs_dir: Path) -> dict[str, str]:
@@ -161,3 +171,19 @@ def _write_text_atomic(path: Path, text: str) -> None:
     tmp_path = path.with_name(f".{path.name}.tmp")
     tmp_path.write_text(text, encoding="utf-8")
     tmp_path.replace(path)
+
+
+def _record_budget_command(
+    budget_ledger: Any | None,
+    status_payload: dict[str, Any],
+    output: Any,
+) -> None:
+    recorder = getattr(budget_ledger, "record_command", None)
+    if not callable(recorder):
+        return
+    recorder(
+        action=str(status_payload.get("action", "agent")),
+        status=str(status_payload.get("status", "unknown")),
+        duration_seconds=float(status_payload.get("duration_seconds") or 0.0),
+        output=output,
+    )

@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 
 from .types import RootMemory, SearchNode, TaskSnapshot
@@ -146,6 +147,7 @@ class SensingRuntime:
         node: SearchNode | None = None,
         config: SensingConfig | None = None,
         task: Any | None = None,
+        budget_ledger: Any | None = None,
     ) -> None:
         self.base_dir = base_dir
         self.cwd = cwd
@@ -155,6 +157,7 @@ class SensingRuntime:
         self.node = node
         self.config = config or SensingConfig()
         self.task = task
+        self.budget_ledger = budget_ledger
         self.sensing_dir = self.base_dir / "sensing"
         self.events_path = self.sensing_dir / "events.jsonl"
         self.probe_history_path = self.sensing_dir / "probe_results.jsonl"
@@ -284,6 +287,21 @@ class SensingRuntime:
         }
 
     def _run_probe(self, index: int, request: Any) -> dict[str, Any]:
+        if self.budget_ledger is not None and not self.budget_ledger.can_start_probe():
+            return {
+                "index": index,
+                "kind": str(request.get("kind", "unknown")) if isinstance(request, dict) else "unknown",
+                "status": "rejected",
+                "summary": "Probe budget exhausted.",
+                "diagnostic_only": True,
+                "budget_rejected": True,
+            }
+        started_at = time.monotonic()
+        result = self._run_probe_inner(index, request)
+        result["duration_seconds"] = round(time.monotonic() - started_at, 3)
+        return result
+
+    def _run_probe_inner(self, index: int, request: Any) -> dict[str, Any]:
         if not isinstance(request, dict):
             return {
                 "index": index,
@@ -390,6 +408,9 @@ class SensingRuntime:
                     **result,
                 }
             )
+            recorder = getattr(self.budget_ledger, "record_probe", None)
+            if callable(recorder):
+                recorder(action=action, result=result)
 
     def _write_manifest(
         self,

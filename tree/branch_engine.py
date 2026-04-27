@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .agent import AgentAdapter
 from .task import candidate_checkpoint_path, checkpoint_candidate, restore_candidate
-from .types import ExecutionResult, RootMemory, SearchConfig, SearchNode, TaskSnapshot
+from .types import ExecutionResult, Insight, RootMemory, SearchConfig, SearchNode, TaskSnapshot
 
 
 class BranchEngine:
@@ -23,6 +23,7 @@ class BranchEngine:
         log_event: Callable[[str, dict[str, object]], None],
         persist_state: Callable[[], None],
         merge_completed: Callable[[SearchNode], None],
+        budget_ledger: Any | None = None,
     ) -> None:
         self.task = task
         self.agent = agent
@@ -32,6 +33,7 @@ class BranchEngine:
         self.log_event = log_event
         self.persist_state = persist_state
         self.merge_completed = merge_completed
+        self.budget_ledger = budget_ledger
 
     def run(self, node: SearchNode, parent: SearchNode) -> None:
         node.status = "running"
@@ -47,6 +49,9 @@ class BranchEngine:
         self._run_local_loop(node, parent, branch_iterations)
 
     def _run_single_step(self, node: SearchNode, parent: SearchNode) -> None:
+        if self._agent_budget_exhausted(self.config.executor_command):
+            self._mark_budget_pruned(node)
+            return
         node.execution_result = self.agent.execute(
             self.task,
             self.task_snapshot,
@@ -78,13 +83,7 @@ class BranchEngine:
                 "summary": node.evaluation_result.summary,
             },
         )
-        node.insight = self.agent.reflect(
-            self.task,
-            self.task_snapshot,
-            self.root_memory,
-            parent,
-            node,
-        )
+        node.insight = self._reflect(node, parent)
         self.log_event(
             "reflection_completed",
             {
@@ -111,6 +110,26 @@ class BranchEngine:
         local_history: list[dict[str, object]] = []
 
         for iteration in range(1, branch_iterations + 1):
+            if self._agent_budget_exhausted(self.config.executor_command):
+                local_history.append(
+                    {
+                        "iteration": iteration,
+                        "status": "skipped",
+                        "changed": False,
+                        "summary": "Agent budget exhausted before this local iteration.",
+                    }
+                )
+                if best_evaluation is None or best_execution is None:
+                    node.execution_result = ExecutionResult(
+                        status="skipped",
+                        summary="Agent budget exhausted before the branch produced an improvement.",
+                        changed=False,
+                        candidate_path=node.candidate_path,
+                        metadata={"local_history": local_history, "budget_exhausted": True},
+                    )
+                    node.status = "pruned"
+                    return
+                break
             node.planner_context["local_iteration"] = iteration
             node.planner_context["local_iteration_limit"] = branch_iterations
             node.planner_context["current_branch_best_score"] = (
@@ -258,13 +277,7 @@ class BranchEngine:
             },
         )
         node.evaluation_result = best_evaluation
-        node.insight = self.agent.reflect(
-            self.task,
-            self.task_snapshot,
-            self.root_memory,
-            parent,
-            node,
-        )
+        node.insight = self._reflect(node, parent)
         self.log_event(
             "reflection_completed",
             {
@@ -311,4 +324,47 @@ class BranchEngine:
             limit = int(provider())
         if planner_limit is not None:
             limit = min(limit, planner_limit)
+        remaining_agent_calls = (
+            self.budget_ledger.remaining_agent_calls()
+            if self.budget_ledger is not None and self.config.executor_command
+            else None
+        )
+        if remaining_agent_calls is not None:
+            limit = min(limit, max(1, remaining_agent_calls))
         return max(1, limit)
+
+    def _reflect(self, node: SearchNode, parent: SearchNode) -> Insight:
+        if self._agent_budget_exhausted(self.config.reflector_command):
+            self.log_event(
+                "reflection_skipped",
+                {
+                    "node_id": node.id,
+                    "reason": "agent_budget_exhausted",
+                },
+            )
+            return Insight(
+                polarity="neutral",
+                summary="Reflection skipped because the agent budget was exhausted.",
+                evidence=[],
+                source_node_id=node.id,
+            )
+        return self.agent.reflect(
+            self.task,
+            self.task_snapshot,
+            self.root_memory,
+            parent,
+            node,
+        )
+
+    def _agent_budget_exhausted(self, command: str | None) -> bool:
+        return bool(command and self.budget_ledger is not None and not self.budget_ledger.can_start_agent_step())
+
+    def _mark_budget_pruned(self, node: SearchNode) -> None:
+        node.execution_result = ExecutionResult(
+            status="skipped",
+            summary="Agent budget exhausted before execution.",
+            changed=False,
+            candidate_path=node.candidate_path,
+            metadata={"budget_exhausted": True},
+        )
+        node.status = "pruned"

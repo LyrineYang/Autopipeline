@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tree.pipeline import (
+from pipeline.task import (
     PipelineTask,
     create_pipeline_smoke_fixture,
     run_pipeline_smoke,

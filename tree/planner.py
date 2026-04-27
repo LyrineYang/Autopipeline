@@ -49,9 +49,11 @@ class Planner:
         *,
         planner_command: str | None = None,
         command_timeout_seconds: float | None = 600,
+        budget_ledger: Any | None = None,
     ) -> None:
         self.planner_command = planner_command
         self.command_timeout_seconds = command_timeout_seconds
+        self.budget_ledger = budget_ledger
 
     def build_packet(
         self,
@@ -69,7 +71,7 @@ class Planner:
                 task_snapshot=task_snapshot,
                 root=root,
                 parent=parent,
-                raw_context={},
+                raw_context=_with_budget_context({}, self.budget_ledger),
                 limit=limit,
                 upper_bounds=upper_bounds or {},
             )
@@ -78,6 +80,7 @@ class Planner:
             raw_context = context_provider(parent, root, limit, upper_bounds=upper_bounds or {})
         else:
             raw_context = context_provider(parent, root, limit)
+        raw_context = _with_budget_context(raw_context, self.budget_ledger)
 
         if self.planner_command:
             return self._planner_packet(
@@ -111,6 +114,16 @@ class Planner:
         limit: int,
         upper_bounds: dict[str, int],
     ) -> PlannerPacket:
+        if self.budget_ledger is not None and not self.budget_ledger.can_start_agent_step():
+            return self._fallback_packet(
+                task=task,
+                task_snapshot=task_snapshot,
+                root=root,
+                parent=parent,
+                raw_context=raw_context,
+                limit=limit,
+                upper_bounds=upper_bounds,
+            )
         prompt = build_planner_prompt(task_snapshot, root, parent, limit, raw_context, upper_bounds)
         payload = build_planner_payload(task_snapshot, root, parent, limit, raw_context, upper_bounds)
         telemetry = build_planner_telemetry(task_snapshot, root, parent, raw_context, upper_bounds)
@@ -124,6 +137,7 @@ class Planner:
             root=root,
             parent=parent,
             task=task,
+            budget_ledger=self.budget_ledger,
         )
         raw = run_json_command(
             self.planner_command,
@@ -136,6 +150,7 @@ class Planner:
             sensing=sensing,
             error_cls=PlannerStepError,
             timeout_seconds=self.command_timeout_seconds,
+            budget_ledger=self.budget_ledger,
         )
         return self._packet_from_output(
             task=task,
@@ -416,6 +431,22 @@ def _history_context(root: RootMemory) -> dict[str, Any]:
         "positive_insights": root.positive_insights[-5:],
         "negative_insights": root.negative_insights[-5:],
         "neutral_insights": root.neutral_insights[-5:],
+    }
+
+
+def _with_budget_context(raw_context: Any, budget_ledger: Any | None) -> dict[str, Any]:
+    context = raw_context if isinstance(raw_context, dict) else {}
+    if budget_ledger is None:
+        return context
+    summary_builder = getattr(budget_ledger, "planner_context", None)
+    summary = summary_builder() if callable(summary_builder) else budget_ledger.summary()
+    return {
+        **context,
+        "budget_context": summary,
+        "history_context": {
+            **_dict_value(context.get("history_context")),
+            "budget_context": summary,
+        },
     }
 
 

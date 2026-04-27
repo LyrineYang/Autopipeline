@@ -432,6 +432,39 @@ class TreeSearchEngineTests(unittest.TestCase):
             self.assertTrue((run_dir / "tree_events.jsonl").exists())
             self.assertIsNotNone(task.promoted_path)
 
+    def test_agent_budget_can_stop_expansion_before_executor_call(self) -> None:
+        branch = Hypothesis(id="branch", title="Branch", core_hypothesis="branch-path")
+        task = FakeTask(
+            seed_hypotheses=[branch],
+            score_by_hypothesis={
+                "Record the unmodified baseline workspace.": 1.0,
+                "branch-path": 2.0,
+            },
+            accepted_hypotheses={"Record the unmodified baseline workspace.", "branch-path"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [branch]}),
+                config=SearchConfig(
+                    beam_width=1,
+                    max_rounds=1,
+                    children_per_expansion=1,
+                    executor_command="agent-backed-executor",
+                    max_agent_calls=0,
+                ),
+                run_dir=run_dir,
+            )
+
+            result = engine.run()
+
+            self.assertEqual(result.total_nodes, 1)
+            self.assertEqual(result.best_node_id, "node-0001")
+            state = json.loads((run_dir / "search_state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["budget"]["agent_usage"]["remaining_agent_calls"], 0)
+
     def test_engine_retains_previous_frontier_when_no_child_is_accepted(self) -> None:
         reject = Hypothesis(id="reject", title="Reject", core_hypothesis="reject-path")
         task = FakeTask(

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .agent import AgentAdapter, AgentStepError
 from .branch_engine import BranchEngine
+from .budget import BudgetLedger
 from .task import OptimizationTask, validate_sandbox_backend
 from .types import (
     ExecutionResult,
@@ -38,6 +39,10 @@ class TreeSearchEngine:
         self.events_path = self.run_dir / "tree_events.jsonl"
         self.task_snapshot = self.task.snapshot()
         self.root_memory = RootMemory(objective=self.task_snapshot.objective)
+        self.budget_ledger = BudgetLedger(
+            max_agent_calls=config.max_agent_calls,
+            max_probe_calls=config.max_probe_calls,
+        )
         self.nodes: dict[str, SearchNode] = {}
         self.frontier_node_ids: list[str] = []
         self.final_result: SearchResult | None = None
@@ -45,7 +50,11 @@ class TreeSearchEngine:
         self.planner = Planner(
             planner_command=config.planner_command,
             command_timeout_seconds=config.command_timeout_seconds,
+            budget_ledger=self.budget_ledger,
         )
+        budget_setter = getattr(self.agent, "set_budget_ledger", None)
+        if callable(budget_setter):
+            budget_setter(self.budget_ledger)
         self.branch_engine = BranchEngine(
             task=self.task,
             agent=self.agent,
@@ -55,6 +64,7 @@ class TreeSearchEngine:
             log_event=self._log_event,
             persist_state=self._persist_state,
             merge_completed=self._merge_completed_node,
+            budget_ledger=self.budget_ledger,
         )
 
     def run(self) -> SearchResult:
@@ -270,6 +280,7 @@ class TreeSearchEngine:
                 "error": node.error,
             },
         )
+        self.budget_ledger.record_node(node=node, parent=parent)
         self._persist_state()
 
     def _merge_completed_node(self, node: SearchNode) -> None:
@@ -310,6 +321,7 @@ class TreeSearchEngine:
             "frontier_node_ids": list(self.frontier_node_ids),
             "nodes": {node_id: asdict(node) for node_id, node in self.nodes.items()},
             "final_result": asdict(self.final_result) if self.final_result else None,
+            "budget": self.budget_ledger.summary(),
         }
         self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -358,6 +370,11 @@ class TreeSearchEngine:
         return max(1, min(self.config.beam_width, policy.branch_budget.beam_width))
 
     def _should_expand_parent(self, parent: SearchNode, packet: PlannerPacket) -> bool:
+        if (
+            (self.config.planner_command or self.config.executor_command or self.config.reflector_command)
+            and not self.budget_ledger.can_start_agent_step()
+        ):
+            return False
         policy = packet.search_policy
         if policy is None or policy.branch_budget.rounds is None:
             return True

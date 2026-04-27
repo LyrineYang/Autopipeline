@@ -42,6 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=600,
         help="Timeout for planner, executor, and reflector commands.",
     )
+    parser.add_argument("--max-agent-calls", type=int, default=None)
+    parser.add_argument("--max-probe-calls", type=int, default=None)
     return parser
 
 
@@ -81,6 +83,8 @@ def main() -> None:
         reflector_command=args.reflector_command,
         enable_final_verify=bool(args.verify_command),
         command_timeout_seconds=args.command_timeout_seconds,
+        max_agent_calls=args.max_agent_calls,
+        max_probe_calls=args.max_probe_calls,
     )
 
     engine = TreeSearchEngine(
