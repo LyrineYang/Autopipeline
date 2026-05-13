@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import threading
 from typing import Any
 
 from .types import SearchNode
@@ -18,29 +19,36 @@ class BudgetLedger:
     cost_usd: float = 0.0
     agent_seconds: float = 0.0
     command_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
+    role_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
     probe_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
     family_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
     recent_events: list[dict[str, Any]] = field(default_factory=list)
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def can_start_agent_step(self) -> bool:
-        return self.max_agent_calls is None or self.agent_calls < self.max_agent_calls
+        with self._lock:
+            return self.max_agent_calls is None or self.agent_calls < self.max_agent_calls
 
     def can_start_probe(self) -> bool:
-        return self.max_probe_calls is None or self.probe_calls < self.max_probe_calls
+        with self._lock:
+            return self.max_probe_calls is None or self.probe_calls < self.max_probe_calls
 
     @property
     def probe_calls(self) -> int:
-        return sum(int(item.get("calls", 0)) for item in self.probe_stats.values())
+        with self._lock:
+            return sum(int(item.get("calls", 0)) for item in self.probe_stats.values())
 
     def remaining_agent_calls(self) -> int | None:
-        if self.max_agent_calls is None:
-            return None
-        return max(0, self.max_agent_calls - self.agent_calls)
+        with self._lock:
+            if self.max_agent_calls is None:
+                return None
+            return max(0, self.max_agent_calls - self.agent_calls)
 
     def remaining_probe_calls(self) -> int | None:
-        if self.max_probe_calls is None:
-            return None
-        return max(0, self.max_probe_calls - self.probe_calls)
+        with self._lock:
+            if self.max_probe_calls is None:
+                return None
+            return max(0, self.max_probe_calls - self.probe_calls)
 
     def record_command(
         self,
@@ -49,142 +57,192 @@ class BudgetLedger:
         status: str,
         duration_seconds: float,
         output: Any = None,
+        role: str | None = None,
+        failure_class: str = "",
     ) -> None:
-        action_key = action or "agent"
-        stats = self.command_stats.setdefault(
-            action_key,
-            {"calls": 0, "failures": 0, "timeouts": 0, "cancelled": 0, "seconds": 0.0},
-        )
-        stats["calls"] += 1
-        stats["seconds"] = round(float(stats["seconds"]) + duration_seconds, 3)
-        if status != "completed":
-            stats["failures"] += 1
-        if status == "timed_out":
-            stats["timeouts"] += 1
-        if status == "cancelled":
-            stats["cancelled"] += 1
+        with self._lock:
+            action_key = action or "agent"
+            role_key = role or action_key
+            usage = _extract_usage(output)
+            self._record_command_stats(
+                self.command_stats,
+                action_key,
+                status=status,
+                duration_seconds=duration_seconds,
+                usage=usage,
+                failure_class=failure_class,
+            )
+            self._record_command_stats(
+                self.role_stats,
+                role_key,
+                status=status,
+                duration_seconds=duration_seconds,
+                usage=usage,
+                failure_class=failure_class,
+            )
 
-        self.agent_calls += 1
-        self.agent_seconds = round(self.agent_seconds + duration_seconds, 3)
-        usage = _extract_usage(output)
-        self.api_calls += int(usage.get("api_calls", 1))
-        self.total_tokens += int(usage.get("total_tokens", 0))
-        self.prompt_tokens += int(usage.get("prompt_tokens", 0))
-        self.completion_tokens += int(usage.get("completion_tokens", 0))
-        self.cost_usd = round(self.cost_usd + float(usage.get("cost_usd", 0.0)), 6)
-        self._append_recent(
-            {
-                "kind": "agent_command",
-                "action": action_key,
-                "status": status,
-                "duration_seconds": duration_seconds,
-            }
-        )
+            self.agent_calls += 1
+            self.agent_seconds = round(self.agent_seconds + duration_seconds, 3)
+            self.api_calls += int(usage.get("api_calls", 1))
+            self.total_tokens += int(usage.get("total_tokens", 0))
+            self.prompt_tokens += int(usage.get("prompt_tokens", 0))
+            self.completion_tokens += int(usage.get("completion_tokens", 0))
+            self.cost_usd = round(self.cost_usd + float(usage.get("cost_usd", 0.0)), 6)
+            self._append_recent(
+                {
+                    "kind": "agent_command",
+                    "action": action_key,
+                    "role": role_key,
+                    "status": status,
+                    "failure_class": failure_class,
+                    "duration_seconds": duration_seconds,
+                }
+            )
 
     def record_probe(self, *, action: str, result: dict[str, Any]) -> None:
-        if result.get("budget_rejected"):
-            return
-        kind = str(result.get("kind") or "unknown")
-        stats = self.probe_stats.setdefault(
-            kind,
-            {"calls": 0, "failures": 0, "rejected": 0, "useful_signals": 0, "seconds": 0.0},
-        )
-        status = str(result.get("status", ""))
-        stats["calls"] += 1
-        stats["seconds"] = round(
-            float(stats["seconds"]) + float(result.get("duration_seconds") or 0.0),
-            3,
-        )
-        if status == "failed":
-            stats["failures"] += 1
-        if status == "rejected":
-            stats["rejected"] += 1
-        stats["useful_signals"] += _count_useful_signals(result.get("data"))
-        self._append_recent(
-            {
-                "kind": "probe",
-                "action": action,
-                "probe": kind,
-                "status": status,
-            }
-        )
+        with self._lock:
+            if result.get("budget_rejected"):
+                return
+            kind = str(result.get("kind") or "unknown")
+            stats = self.probe_stats.setdefault(
+                kind,
+                {"calls": 0, "failures": 0, "rejected": 0, "useful_signals": 0, "seconds": 0.0},
+            )
+            status = str(result.get("status", ""))
+            stats["calls"] += 1
+            stats["seconds"] = round(
+                float(stats["seconds"]) + float(result.get("duration_seconds") or 0.0),
+                3,
+            )
+            if status == "failed":
+                stats["failures"] += 1
+            if status == "rejected":
+                stats["rejected"] += 1
+            stats["useful_signals"] += _count_useful_signals(result.get("data"))
+            self._append_recent(
+                {
+                    "kind": "probe",
+                    "action": action,
+                    "probe": kind,
+                    "status": status,
+                }
+            )
 
     def record_node(self, *, node: SearchNode, parent: SearchNode | None) -> None:
-        if node.hypothesis.id == "baseline":
-            return
-        family = node.hypothesis.family.strip() or "unspecified"
-        stats = self.family_stats.setdefault(
-            family,
-            {
-                "attempts": 0,
-                "accepted": 0,
-                "rejected": 0,
-                "failed": 0,
-                "compile_failures": 0,
-                "score_delta_total": 0.0,
-            },
-        )
-        stats["attempts"] += 1
-        accepted = bool(node.evaluation_result and node.evaluation_result.accepted)
-        if node.status == "failed":
-            stats["failed"] += 1
-        elif accepted:
-            stats["accepted"] += 1
-        else:
-            stats["rejected"] += 1
-        if _looks_like_compile_failure(node):
-            stats["compile_failures"] += 1
-
-        if node.evaluation_result is not None and parent is not None and parent.evaluation_result is not None:
-            stats["score_delta_total"] = round(
-                float(stats["score_delta_total"])
-                + (node.evaluation_result.score - parent.evaluation_result.score),
-                6,
+        with self._lock:
+            if node.hypothesis.id == "baseline":
+                return
+            family = node.hypothesis.family.strip() or "unspecified"
+            stats = self.family_stats.setdefault(
+                family,
+                {
+                    "attempts": 0,
+                    "accepted": 0,
+                    "rejected": 0,
+                    "failed": 0,
+                    "compile_failures": 0,
+                    "score_delta_total": 0.0,
+                },
             )
-        self._append_recent(
-            {
-                "kind": "node",
-                "node_id": node.id,
-                "family": family,
-                "status": node.status,
-                "accepted": accepted,
-            }
-        )
+            stats["attempts"] += 1
+            accepted = bool(node.evaluation_result and node.evaluation_result.accepted)
+            if node.status == "failed":
+                stats["failed"] += 1
+            elif accepted:
+                stats["accepted"] += 1
+            else:
+                stats["rejected"] += 1
+            if _looks_like_compile_failure(node):
+                stats["compile_failures"] += 1
+
+            if node.evaluation_result is not None and parent is not None and parent.evaluation_result is not None:
+                stats["score_delta_total"] = round(
+                    float(stats["score_delta_total"])
+                    + (node.evaluation_result.score - parent.evaluation_result.score),
+                    6,
+                )
+            self._append_recent(
+                {
+                    "kind": "node",
+                    "node_id": node.id,
+                    "family": family,
+                    "status": node.status,
+                    "accepted": accepted,
+                }
+            )
 
     def summary(self) -> dict[str, Any]:
-        family_stats = {
-            family: {
-                **stats,
-                "avg_score_delta": _average_delta(stats),
+        with self._lock:
+            family_stats = {
+                family: {
+                    **stats,
+                    "avg_score_delta": _average_delta(stats),
+                }
+                for family, stats in sorted(self.family_stats.items())
             }
-            for family, stats in sorted(self.family_stats.items())
-        }
-        return {
-            "agent_usage": {
+            remaining_agent_calls = (
+                None
+                if self.max_agent_calls is None
+                else max(0, self.max_agent_calls - self.agent_calls)
+            )
+            probe_calls = sum(int(item.get("calls", 0)) for item in self.probe_stats.values())
+            remaining_probe_calls = (
+                None
+                if self.max_probe_calls is None
+                else max(0, self.max_probe_calls - probe_calls)
+            )
+            return {
+                "agent_usage": {
+                    "agent_calls": self.agent_calls,
+                    "api_calls": self.api_calls,
+                    "total_tokens": self.total_tokens,
+                    "prompt_tokens": self.prompt_tokens,
+                    "completion_tokens": self.completion_tokens,
+                    "cost_usd": self.cost_usd,
+                    "agent_seconds": self.agent_seconds,
+                    "remaining_agent_calls": remaining_agent_calls,
+                },
+                "probe_usage": {
+                    "probe_calls": probe_calls,
+                    "remaining_probe_calls": remaining_probe_calls,
+                },
+                "command_stats": self.command_stats,
+                "role_stats": self.role_stats,
+                "probe_stats": self.probe_stats,
+                "family_stats": family_stats,
+                "recommendations": self._recommendations(family_stats),
+                "recent_events": list(self.recent_events),
+            }
+
+    def planner_context(self) -> dict[str, Any]:
+        with self._lock:
+            family_items = list(sorted(self.family_stats.items()))
+            probe_items = list(sorted(self.probe_stats.items()))
+            agent_usage = {
                 "agent_calls": self.agent_calls,
                 "api_calls": self.api_calls,
                 "total_tokens": self.total_tokens,
-                "prompt_tokens": self.prompt_tokens,
-                "completion_tokens": self.completion_tokens,
                 "cost_usd": self.cost_usd,
-                "agent_seconds": self.agent_seconds,
-                "remaining_agent_calls": self.remaining_agent_calls(),
-            },
-            "probe_usage": {
-                "probe_calls": self.probe_calls,
-                "remaining_probe_calls": self.remaining_probe_calls(),
-            },
-            "command_stats": self.command_stats,
-            "probe_stats": self.probe_stats,
-            "family_stats": family_stats,
-            "recommendations": self._recommendations(family_stats),
-            "recent_events": list(self.recent_events),
-        }
+                "remaining_agent_calls": (
+                    None
+                    if self.max_agent_calls is None
+                    else max(0, self.max_agent_calls - self.agent_calls)
+                ),
+            }
+            probe_calls = sum(int(item.get("calls", 0)) for item in self.probe_stats.values())
+            probe_usage = {
+                "probe_calls": probe_calls,
+                "remaining_probe_calls": (
+                    None
+                    if self.max_probe_calls is None
+                    else max(0, self.max_probe_calls - probe_calls)
+                ),
+            }
+            role_stats = dict(self.role_stats)
 
-    def planner_context(self) -> dict[str, Any]:
         low_yield_families: list[str] = []
         compile_cooldown_families: list[str] = []
-        for family, stats in sorted(self.family_stats.items()):
+        for family, stats in family_items:
             attempts = int(stats.get("attempts", 0))
             accepted = int(stats.get("accepted", 0))
             compile_failures = int(stats.get("compile_failures", 0))
@@ -195,7 +253,7 @@ class BudgetLedger:
 
         low_value_probes: list[str] = []
         high_failure_probes: list[str] = []
-        for kind, stats in sorted(self.probe_stats.items()):
+        for kind, stats in probe_items:
             calls = int(stats.get("calls", 0))
             useful = int(stats.get("useful_signals", 0))
             failures = int(stats.get("failures", 0))
@@ -206,16 +264,10 @@ class BudgetLedger:
 
         return {
             "agent_usage": {
-                "agent_calls": self.agent_calls,
-                "api_calls": self.api_calls,
-                "total_tokens": self.total_tokens,
-                "cost_usd": self.cost_usd,
-                "remaining_agent_calls": self.remaining_agent_calls(),
+                **agent_usage,
             },
-            "probe_usage": {
-                "probe_calls": self.probe_calls,
-                "remaining_probe_calls": self.remaining_probe_calls(),
-            },
+            "probe_usage": probe_usage,
+            "role_stats": role_stats,
             "family_guidance": {
                 "low_yield": low_yield_families[:4],
                 "compile_cooldown": compile_cooldown_families[:4],
@@ -230,10 +282,49 @@ class BudgetLedger:
                         **stats,
                         "avg_score_delta": _average_delta(stats),
                     }
-                    for family, stats in sorted(self.family_stats.items())
+                    for family, stats in family_items
                 }
             )[:4],
         }
+
+    def _record_command_stats(
+        self,
+        bucket: dict[str, dict[str, Any]],
+        key: str,
+        *,
+        status: str,
+        duration_seconds: float,
+        usage: dict[str, Any],
+        failure_class: str,
+    ) -> None:
+        stats = bucket.setdefault(
+            key,
+            {
+                "calls": 0,
+                "failures": 0,
+                "timeouts": 0,
+                "cancelled": 0,
+                "seconds": 0.0,
+                "api_calls": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+                "failure_classes": {},
+            },
+        )
+        stats["calls"] += 1
+        stats["seconds"] = round(float(stats["seconds"]) + duration_seconds, 3)
+        stats["api_calls"] += int(usage.get("api_calls", 1))
+        stats["total_tokens"] += int(usage.get("total_tokens", 0))
+        stats["cost_usd"] = round(float(stats["cost_usd"]) + float(usage.get("cost_usd", 0.0)), 6)
+        if status != "completed":
+            stats["failures"] += 1
+        if status == "timed_out":
+            stats["timeouts"] += 1
+        if status == "cancelled":
+            stats["cancelled"] += 1
+        if failure_class:
+            classes = stats["failure_classes"]
+            classes[failure_class] = int(classes.get(failure_class, 0)) + 1
 
     def _recommendations(self, family_stats: dict[str, dict[str, Any]]) -> list[str]:
         recommendations: list[str] = []
@@ -253,7 +344,9 @@ class BudgetLedger:
             if compile_failures >= 2:
                 recommendations.append(f"cool down {family}; compile failures are recurring")
 
-        for kind, stats in sorted(self.probe_stats.items()):
+        with self._lock:
+            probe_items = list(sorted(self.probe_stats.items()))
+        for kind, stats in probe_items:
             calls = int(stats.get("calls", 0))
             useful = int(stats.get("useful_signals", 0))
             failures = int(stats.get("failures", 0))

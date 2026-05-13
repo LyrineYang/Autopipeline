@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from tree.planner import Planner
+from tree.prior import kernel_optimization_prior
 from tree.prompts import build_planner_prompt
 from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 
@@ -27,6 +28,7 @@ class ContextTask(SeedOnlyTask):
     def planner_context(self, parent, root, limit, *, upper_bounds=None):
         return {
             "static_prior": {"kernel_type": "matmul", "optimization_scope": "kernel"},
+            "optimization_prior": kernel_optimization_prior(),
             "hardware_context": {"gpu_name": "H100"},
             "history_context": {"positive_insights": ["memory branch improved"]},
             "region_graph": {
@@ -66,6 +68,8 @@ class ContextTask(SeedOnlyTask):
                     "id": "ctx-1",
                     "title": "Context branch",
                     "core_hypothesis": "context-provided hypothesis",
+                    "idea_id": "memory-access",
+                    "implementation_variant": "shared-memory-tiling",
                     "family": "memory_hierarchy",
                     "editable_path_hints": ["kernel.py"],
                 }
@@ -134,6 +138,8 @@ class PlannerTests(unittest.TestCase):
 
         self.assertEqual(len(packet.branch_cards), 1)
         self.assertEqual(packet.branch_cards[0].core_hypothesis, "context-provided hypothesis")
+        self.assertEqual(packet.branch_cards[0].idea_id, "memory-access")
+        self.assertEqual(packet.branch_cards[0].implementation_variant, "shared-memory-tiling")
         self.assertEqual(packet.branch_cards[0].family, "memory_hierarchy")
         self.assertIsNotNone(packet.region_graph)
         self.assertEqual(packet.region_graph.focus_region_id, "current-kernel")
@@ -175,6 +181,78 @@ class PlannerTests(unittest.TestCase):
 
         self.assertEqual(len(packet.branch_cards), 2)
         self.assertEqual([card.family for card in packet.branch_cards], ["memory_hierarchy", "memory_hierarchy"])
+
+    def test_same_idea_can_emit_multiple_implementation_variants(self) -> None:
+        class SameIdeaTask(ContextTask):
+            def planner_context(self, parent, root, limit, *, upper_bounds=None):
+                context = super().planner_context(parent, root, limit, upper_bounds=upper_bounds)
+                context["planner_rules"]["allowed_families"] = ["memory_access"]
+                context["branch_cards"] = [
+                    {
+                        "id": "tile-a",
+                        "title": "Tile A",
+                        "core_hypothesis": "Improve memory locality for the hot path.",
+                        "idea_id": "memory-access",
+                        "implementation_variant": "shared-memory-tiling",
+                        "family": "memory_access",
+                        "editable_path_hints": ["kernel.py"],
+                    },
+                    {
+                        "id": "tile-b",
+                        "title": "Tile B",
+                        "core_hypothesis": "Improve memory locality for the hot path.",
+                        "idea_id": "memory-access",
+                        "implementation_variant": "vectorized-loads",
+                        "family": "memory_access",
+                        "editable_path_hints": ["kernel.py"],
+                    },
+                ]
+                return context
+
+        packet = Planner().build_packet(SameIdeaTask(), self.snapshot, self.root, self.parent, 2)
+
+        self.assertEqual([card.idea_id for card in packet.branch_cards], ["memory-access", "memory-access"])
+        self.assertEqual(
+            [card.implementation_variant for card in packet.branch_cards],
+            ["shared-memory-tiling", "vectorized-loads"],
+        )
+
+    def test_planner_handoff_modes_control_executor_detail(self) -> None:
+        class HandoffTask(ContextTask):
+            def planner_context(self, parent, root, limit, *, upper_bounds=None):
+                context = super().planner_context(parent, root, limit, upper_bounds=upper_bounds)
+                context["planner_rules"]["allowed_families"] = ["memory_access"]
+                context["branch_cards"] = [
+                    {
+                        "id": "memory-a",
+                        "title": "Memory idea",
+                        "core_hypothesis": "Improve memory locality for the hot path.",
+                        "idea_id": "memory-access",
+                        "implementation_variant": "shared-memory-tiling",
+                        "implementation_steps": ["inspect stride pattern", "stage reused values"],
+                        "family": "memory_access",
+                        "editable_path_hints": ["kernel.py"],
+                    }
+                ]
+                return context
+
+        expected = {
+            "idea": ("", []),
+            "variant": ("shared-memory-tiling", []),
+            "detailed": ("shared-memory-tiling", ["inspect stride pattern", "stage reused values"]),
+        }
+        for mode, (variant, steps) in expected.items():
+            with self.subTest(mode=mode):
+                packet = Planner(planner_handoff_mode=mode).build_packet(
+                    HandoffTask(),
+                    self.snapshot,
+                    self.root,
+                    self.parent,
+                    1,
+                )
+
+                self.assertEqual(packet.branch_cards[0].implementation_variant, variant)
+                self.assertEqual(packet.branch_cards[0].implementation_steps, steps)
 
     def test_planner_command_can_override_planner_packet(self) -> None:
         script = Path(self.tempdir.name) / "planner.py"
@@ -363,6 +441,7 @@ class PlannerTests(unittest.TestCase):
         )
 
         self.assertIn("Allowed scopes: kernel", prompt)
+        self.assertIn("Optimization prior families: memory_access", prompt)
         self.assertIn("Problem summary: Current target is a hot matmul kernel", prompt)
 
 

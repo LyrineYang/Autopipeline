@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .agent import AgentAdapter
+from .roles import role_config_for
 from .task import candidate_checkpoint_path, checkpoint_candidate, restore_candidate
 from .types import ExecutionResult, Insight, RootMemory, SearchConfig, SearchNode, TaskSnapshot
 
@@ -49,7 +50,7 @@ class BranchEngine:
         self._run_local_loop(node, parent, branch_iterations)
 
     def _run_single_step(self, node: SearchNode, parent: SearchNode) -> None:
-        if self._agent_budget_exhausted(self.config.executor_command):
+        if self._agent_budget_exhausted(self._role_command("executor")):
             self._mark_budget_pruned(node)
             return
         node.execution_result = self.agent.execute(
@@ -110,7 +111,7 @@ class BranchEngine:
         local_history: list[dict[str, object]] = []
 
         for iteration in range(1, branch_iterations + 1):
-            if self._agent_budget_exhausted(self.config.executor_command):
+            if self._agent_budget_exhausted(self._role_command("executor")):
                 local_history.append(
                     {
                         "iteration": iteration,
@@ -311,7 +312,7 @@ class BranchEngine:
         return evaluation_result
 
     def _branch_iteration_limit(self, parent: SearchNode, node: SearchNode) -> int:
-        if not self.config.executor_command:
+        if not self._role_command("executor"):
             return 1
         planner_limit = node.planner_context.get("branch_budget_rounds")
         planner_limit = int(planner_limit) if planner_limit is not None else None
@@ -326,7 +327,7 @@ class BranchEngine:
             limit = min(limit, planner_limit)
         remaining_agent_calls = (
             self.budget_ledger.remaining_agent_calls()
-            if self.budget_ledger is not None and self.config.executor_command
+            if self.budget_ledger is not None and self._role_command("executor")
             else None
         )
         if remaining_agent_calls is not None:
@@ -334,7 +335,7 @@ class BranchEngine:
         return max(1, limit)
 
     def _reflect(self, node: SearchNode, parent: SearchNode) -> Insight:
-        if self._agent_budget_exhausted(self.config.reflector_command):
+        if self._agent_budget_exhausted(self._role_command("reflector")):
             self.log_event(
                 "reflection_skipped",
                 {
@@ -358,6 +359,14 @@ class BranchEngine:
 
     def _agent_budget_exhausted(self, command: str | None) -> bool:
         return bool(command and self.budget_ledger is not None and not self.budget_ledger.can_start_agent_step())
+
+    def _role_command(self, role: str) -> str | None:
+        role_config = role_config_for(self.config.role_configs, role)
+        if role == "executor":
+            return role_config.command or self.config.executor_command
+        if role == "reflector":
+            return role_config.command or self.config.reflector_command
+        return role_config.command
 
     def _mark_budget_pruned(self, node: SearchNode) -> None:
         node.execution_result = ExecutionResult(

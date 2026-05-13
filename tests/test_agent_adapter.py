@@ -10,7 +10,7 @@ from pathlib import Path
 
 from tree.agent import AgentStepError, CommandAgentAdapter
 from tree.prompts import build_execution_payload, build_execution_prompt
-from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
+from tree.types import AgentRoleConfig, EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 from tree.planner import PlannerPacket
 
 
@@ -185,6 +185,54 @@ class CommandAgentAdapterTests(unittest.TestCase):
         self.assertEqual(probe_results[0]["kind"], "read_text")
         self.assertEqual(probe_results[0]["status"], "completed")
         self.assertIn("kernel", "\n".join(probe_results[0]["data"]["lines"]))
+
+    def test_role_config_injects_executor_environment(self) -> None:
+        script = self._write_script(
+            "role_executor.py",
+            """
+            import json
+            import os
+            from pathlib import Path
+
+            Path(os.environ["TREE_OUTPUT_PATH"]).write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "summary": "role env",
+                        "changed": False,
+                        "metadata": {
+                            "role": os.environ.get("TREE_AGENT_ROLE"),
+                            "model": os.environ.get("TREE_AGENT_MODEL"),
+                            "provider": os.environ.get("TREE_AGENT_PROVIDER"),
+                            "subagent": os.environ.get("TREE_AGENT_SUBAGENT"),
+                            "timeout": os.environ.get("TREE_AGENT_TIMEOUT_SECONDS"),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            """,
+        )
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            role_configs={
+                "executor": AgentRoleConfig(
+                    command=self._python_command(script),
+                    provider="codex",
+                    model="gpt-test",
+                    timeout_seconds=3,
+                    subagent="worker",
+                )
+            },
+        )
+
+        execution = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        self.assertEqual(execution.metadata["role"], "executor")
+        self.assertEqual(execution.metadata["model"], "gpt-test")
+        self.assertEqual(execution.metadata["provider"], "codex")
+        self.assertEqual(execution.metadata["subagent"], "worker")
+        self.assertEqual(execution.metadata["timeout"], "3")
 
     def test_execute_can_consume_probe_results_in_same_step(self) -> None:
         script = self._write_script(
@@ -538,6 +586,11 @@ class CommandAgentAdapterTests(unittest.TestCase):
         with self.assertRaises(AgentStepError):
             adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
 
+        status = json.loads(
+            ((Path(self.node.node_dir) / "agent" / "execute" / "command_status.json").read_text(encoding="utf-8"))
+        )
+        self.assertEqual(status["status"], "invalid_output")
+
     def test_missing_output_raises_agent_step_error(self) -> None:
         script = self._write_script("missing_output.py", "pass\n")
         adapter = CommandAgentAdapter(
@@ -547,6 +600,17 @@ class CommandAgentAdapterTests(unittest.TestCase):
 
         with self.assertRaises(AgentStepError):
             adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        status = json.loads(
+            ((Path(self.node.node_dir) / "agent" / "execute" / "command_status.json").read_text(encoding="utf-8"))
+        )
+        self.assertEqual(status["status"], "missing_output")
+
+        diagnostic = json.loads(
+            ((Path(self.node.node_dir) / "agent" / "execute" / "timeout_diagnostic.json").read_text(encoding="utf-8"))
+        )
+        self.assertEqual(diagnostic["status"], "missing_output")
+        self.assertEqual(diagnostic["failure_class"], "missing_output")
 
     def test_nonzero_returncode_raises_agent_step_error(self) -> None:
         script = self._write_script(
@@ -563,6 +627,11 @@ class CommandAgentAdapterTests(unittest.TestCase):
 
         with self.assertRaises(AgentStepError):
             adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        status = json.loads(
+            ((Path(self.node.node_dir) / "agent" / "execute" / "command_status.json").read_text(encoding="utf-8"))
+        )
+        self.assertEqual(status["status"], "failed")
 
     def test_command_timeout_stops_executor_and_records_status(self) -> None:
         script = self._write_script(
@@ -586,6 +655,16 @@ class CommandAgentAdapterTests(unittest.TestCase):
         )
         self.assertTrue(status["timed_out"])
         self.assertEqual(status["status"], "timed_out")
+        diagnostic = json.loads(
+            ((Path(self.node.node_dir) / "agent" / "execute" / "timeout_diagnostic.json").read_text(encoding="utf-8"))
+        )
+        env = json.loads(
+            ((Path(self.node.node_dir) / "agent" / "execute" / "env_redacted.json").read_text(encoding="utf-8"))
+        )
+        self.assertEqual(diagnostic["status"], "timed_out")
+        self.assertEqual(diagnostic["failure_class"], "zero_call_timeout")
+        self.assertEqual(env["role"], "executor")
+        self.assertTrue((Path(self.node.node_dir) / "agent" / "execute" / "activity.jsonl").exists())
 
     def test_command_cancel_file_stops_executor_and_records_status(self) -> None:
         script = self._write_script(

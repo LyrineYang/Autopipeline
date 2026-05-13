@@ -52,11 +52,14 @@ def summarize_node(node: SearchNode | None) -> dict[str, object] | None:
     return {
         "id": node.id,
         "depth": node.depth,
-        "hypothesis": {
-            "id": node.hypothesis.id,
-            "title": node.hypothesis.title,
-            "core_hypothesis": node.hypothesis.core_hypothesis,
-            "scope": node.hypothesis.scope,
+            "hypothesis": {
+                "id": node.hypothesis.id,
+                "title": node.hypothesis.title,
+                "core_hypothesis": node.hypothesis.core_hypothesis,
+                "idea_id": node.hypothesis.idea_id,
+                "implementation_variant": node.hypothesis.implementation_variant,
+                "implementation_steps": node.hypothesis.implementation_steps,
+                "scope": node.hypothesis.scope,
             "target": node.hypothesis.target,
             "constraints_summary": node.hypothesis.constraints_summary,
             "family": node.hypothesis.family,
@@ -143,6 +146,9 @@ def build_planner_payload(
                         "id": "short-unique-id",
                         "title": "brief title",
                         "core_hypothesis": "single-sentence hypothesis",
+                        "idea_id": "shared-natural-language-idea",
+                        "implementation_variant": "one short realization hint",
+                        "implementation_steps": ["only in detailed handoff mode"],
                         "scope": "pipeline",
                         "target": task_snapshot.target_path,
                         "constraints_summary": "what must stay true",
@@ -180,6 +186,19 @@ def build_planner_prompt(
             facts_summary.append(f"Allowed families: {', '.join(str(item) for item in allowed_families[:8])}")
     if raw_context.get("problem_summary"):
         facts_summary.append(f"Problem summary: {raw_context['problem_summary']}")
+    handoff_mode = str(raw_context.get("planner_handoff_mode", "variant"))
+    facts_summary.append(f"Planner handoff mode: {handoff_mode}")
+    optimization_prior = raw_context.get("optimization_prior")
+    if isinstance(optimization_prior, dict):
+        families = optimization_prior.get("families")
+        if isinstance(families, list):
+            family_ids = [
+                str(item.get("id"))
+                for item in families
+                if isinstance(item, dict) and item.get("id")
+            ][:8]
+            if family_ids:
+                facts_summary.append(f"Optimization prior families: {', '.join(family_ids)}")
     budget_context = raw_context.get("budget_context")
     if isinstance(budget_context, dict):
         agent_usage = budget_context.get("agent_usage")
@@ -216,6 +235,8 @@ def build_planner_prompt(
         "- Freeze the decision for the executor: scope, branch identities, budget hints, and stop conditions.\n"
         "- Do not exceed the allowed edit surface or allowed scopes from the payload.\n"
         "- Prefer distinct branches before close variants, but do not force diversity when the evidence is strong.\n"
+        "- Use idea_id to group multiple implementation variants of the same natural-language optimization idea.\n"
+        "- Match the planner handoff mode: idea=idea only, variant=short implementation variant, detailed=variant plus brief implementation steps.\n"
         "- Record only the key high-level decisions that the executor must not reopen.\n"
         f"{chr(10).join(facts_summary)}\n"
     )
@@ -308,6 +329,8 @@ def build_execution_prompt(
     scope_context_files = node.planner_context.get("scope_context_files", [])
     if not isinstance(scope_context_files, list):
         scope_context_files = []
+    implementation_steps = node.hypothesis.implementation_steps
+    steps_text = "; ".join(str(item) for item in implementation_steps) if implementation_steps else "none"
     return (
         "Execute one local edit step inside the current branch-local optimization loop.\n"
         "Return JSON only via TREE_OUTPUT_PATH.\n"
@@ -322,6 +345,9 @@ def build_execution_prompt(
         f"Sandbox path: {node.sandbox_path}\n"
         f"Parent node: {parent.id}\n"
         f"Node hypothesis: {node.hypothesis.core_hypothesis}\n"
+        f"Idea id: {node.hypothesis.idea_id or 'none'}\n"
+        f"Implementation variant: {node.hypothesis.implementation_variant or 'none'}\n"
+        f"Implementation steps: {steps_text}\n"
         f"Branch scope: {node.hypothesis.scope or node.planner_context.get('branch_scope', 'unspecified')}\n"
         f"Branch target: {node.hypothesis.target or node.planner_context.get('branch_target', task_snapshot.target_path)}\n"
         f"Mechanism family: {node.hypothesis.family}\n"

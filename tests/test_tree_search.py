@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -119,6 +121,27 @@ class RejectingFinalVerifyTask(FakeTask):
             "summary": "final verification failed",
             "correctness": "FAIL",
         }
+
+
+class ConcurrentFakeTask(FakeTask):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.active_evaluations = 0
+        self.max_active_evaluations = 0
+        self._lock = threading.Lock()
+
+    def evaluate(self, node: SearchNode) -> EvaluationResult:
+        if node.hypothesis.id != "baseline":
+            with self._lock:
+                self.active_evaluations += 1
+                self.max_active_evaluations = max(self.max_active_evaluations, self.active_evaluations)
+            time.sleep(0.1)
+            try:
+                return super().evaluate(node)
+            finally:
+                with self._lock:
+                    self.active_evaluations -= 1
+        return super().evaluate(node)
 
 
 class FakeAgent(AgentAdapter):
@@ -392,6 +415,112 @@ class TreeSearchEngineTests(unittest.TestCase):
             self.assertEqual(result.total_nodes, 3)
             self.assertEqual(engine.nodes["node-0002"].hypothesis.id, "branch-a")
             self.assertEqual(engine.nodes["node-0003"].hypothesis.id, "branch-b")
+
+    def test_parallel_branch_execution_runs_sibling_trials_concurrently(self) -> None:
+        first = Hypothesis(id="first", title="First", core_hypothesis="first-path")
+        second = Hypothesis(id="second", title="Second", core_hypothesis="second-path")
+        task = ConcurrentFakeTask(
+            seed_hypotheses=[first, second],
+            score_by_hypothesis={
+                "Record the unmodified baseline workspace.": 1.0,
+                "first-path": 2.0,
+                "second-path": 3.0,
+            },
+            accepted_hypotheses={
+                "Record the unmodified baseline workspace.",
+                "first-path",
+                "second-path",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [first, second]}),
+                config=SearchConfig(
+                    beam_width=2,
+                    max_rounds=1,
+                    children_per_expansion=2,
+                    max_parallel_branches=2,
+                ),
+                run_dir=run_dir,
+            )
+
+            engine.run()
+
+            self.assertGreaterEqual(task.max_active_evaluations, 2)
+
+    def test_agent_budget_caps_parallel_branch_execution(self) -> None:
+        first = Hypothesis(id="first", title="First", core_hypothesis="first-path")
+        second = Hypothesis(id="second", title="Second", core_hypothesis="second-path")
+        task = ConcurrentFakeTask(
+            seed_hypotheses=[first, second],
+            score_by_hypothesis={
+                "Record the unmodified baseline workspace.": 1.0,
+                "first-path": 2.0,
+                "second-path": 3.0,
+            },
+            accepted_hypotheses={
+                "Record the unmodified baseline workspace.",
+                "first-path",
+                "second-path",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [first, second]}),
+                config=SearchConfig(
+                    beam_width=2,
+                    max_rounds=1,
+                    children_per_expansion=2,
+                    max_parallel_branches=2,
+                    executor_command="executor",
+                    max_agent_calls=4,
+                ),
+                run_dir=run_dir,
+            )
+
+            engine.run()
+
+            self.assertEqual(task.max_active_evaluations, 1)
+
+    def test_run_archive_records_motifs_and_planner_prior(self) -> None:
+        branch = Hypothesis(
+            id="fast",
+            title="Fast",
+            core_hypothesis="fast-path",
+            family="memory_access",
+            idea_id="memory-access",
+            implementation_variant="coalesced-loads",
+        )
+        task = FakeTask(
+            seed_hypotheses=[branch],
+            score_by_hypothesis={
+                "Record the unmodified baseline workspace.": 1.0,
+                "fast-path": 2.5,
+            },
+            accepted_hypotheses={"Record the unmodified baseline workspace.", "fast-path"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            engine = TreeSearchEngine(
+                task=task,
+                agent=FakeAgent(proposals_by_parent={"node-0001": [branch]}),
+                config=SearchConfig(beam_width=1, max_rounds=1, children_per_expansion=1),
+                run_dir=run_dir,
+            )
+
+            engine.run()
+
+            motifs = (run_dir / "archive" / "motifs.jsonl").read_text(encoding="utf-8")
+            prior = json.loads((run_dir / "archive" / "planner_prior.json").read_text(encoding="utf-8"))
+            self.assertIn("accepted_improved", motifs)
+            self.assertEqual(prior["top_positive_motifs"][0]["family"], "memory_access")
 
     def test_engine_updates_best_node_and_prunes_extra_accepted_nodes(self) -> None:
         fast = Hypothesis(id="fast", title="Fast", core_hypothesis="fast-path")

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from tree.agent import CommandAgentAdapter
 from tree.autokernel import AutoKernelTask
+from tree.roles import add_role_config_args, build_role_configs_from_args
 from tree.search import TreeSearchEngine
 from tree.types import SearchConfig
 
@@ -34,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--verify-command", default=None)
     parser.add_argument("--planner-command", default=None)
+    parser.add_argument(
+        "--planner-handoff-mode",
+        choices=["idea", "variant", "detailed"],
+        default="variant",
+        help="How much implementation detail the planner may hand to the executor.",
+    )
     parser.add_argument("--executor-command", default=None)
     parser.add_argument("--reflector-command", default=None)
     parser.add_argument(
@@ -44,6 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-agent-calls", type=int, default=None)
     parser.add_argument("--max-probe-calls", type=int, default=None)
+    parser.add_argument("--max-parallel-branches", type=int, default=1)
+    parser.add_argument("--branch-resource-policy", default="conservative")
+    add_role_config_args(parser)
     return parser
 
 
@@ -68,17 +78,23 @@ def main() -> None:
         verify_command=args.verify_command,
         run_name=run_name,
     )
+    role_configs = build_role_configs_from_args(args)
     agent = CommandAgentAdapter(
         repo_root=repo_root,
         executor_command=args.executor_command,
         reflector_command=args.reflector_command,
         command_timeout_seconds=args.command_timeout_seconds,
+        role_configs=role_configs,
     )
     config = SearchConfig(
         beam_width=args.beam_width,
         max_rounds=args.max_rounds,
         children_per_expansion=args.children_per_expansion,
+        max_parallel_branches=args.max_parallel_branches,
+        branch_resource_policy=args.branch_resource_policy,
+        role_configs=role_configs,
         planner_command=args.planner_command,
+        planner_handoff_mode=args.planner_handoff_mode,
         executor_command=args.executor_command,
         reflector_command=args.reflector_command,
         enable_final_verify=bool(args.verify_command),

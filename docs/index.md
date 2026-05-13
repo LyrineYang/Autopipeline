@@ -25,3 +25,5 @@ This repository now uses two doc lines:
 
 - [docs/tree_planner_consensus.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/tree_planner_consensus.md): current design consensus
 - [docs/planner_v1.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/planner_v1.md): planner background and earlier design framing
+- [docs/agentic_optimization_lessons.md](/Users/nianzhen/Desktop/autokernel/docs/agentic_optimization_lessons.md): external agent orchestration lessons mapped to the tree framework
+- [docs/run_interaction_metrics.md](/Users/nianzhen/Desktop/autokernel/docs/run_interaction_metrics.md): run viewer data semantics, metrics, and human interaction model

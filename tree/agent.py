@@ -15,7 +15,8 @@ from .prompts import (
 )
 from .sensing import SensingRuntime
 from .task import OptimizationTask
-from .types import ExecutionResult, Hypothesis, Insight, RootMemory, SearchNode, TaskSnapshot
+from .roles import normalize_role_configs, role_config_for
+from .types import AgentRoleConfig, ExecutionResult, Hypothesis, Insight, RootMemory, SearchNode, TaskSnapshot
 from .planner import PlannerPacket
 
 
@@ -148,6 +149,7 @@ class CommandAgentAdapter(AgentAdapter):
         executor_command: str | None = None,
         reflector_command: str | None = None,
         command_timeout_seconds: float | None = 600,
+        role_configs: dict[str, AgentRoleConfig] | None = None,
         budget_ledger: Any | None = None,
         fallback: AgentAdapter | None = None,
     ) -> None:
@@ -155,11 +157,15 @@ class CommandAgentAdapter(AgentAdapter):
         self.executor_command = executor_command
         self.reflector_command = reflector_command
         self.command_timeout_seconds = command_timeout_seconds
+        self.role_configs = normalize_role_configs(role_configs)
         self.budget_ledger = budget_ledger
         self.fallback = fallback or NoOpAgentAdapter()
 
     def set_budget_ledger(self, budget_ledger: Any) -> None:
         self.budget_ledger = budget_ledger
+
+    def set_role_configs(self, role_configs: dict[str, AgentRoleConfig]) -> None:
+        self.role_configs = normalize_role_configs(role_configs)
 
     def propose(
         self,
@@ -182,7 +188,9 @@ class CommandAgentAdapter(AgentAdapter):
         parent: SearchNode,
         node: SearchNode,
     ) -> ExecutionResult:
-        if not self.executor_command:
+        role_config = role_config_for(self.role_configs, "executor")
+        command = role_config.command or self.executor_command
+        if not command:
             return self.fallback.execute(task, task_snapshot, root, parent, node)
 
         payload = build_execution_payload(task_snapshot, root, parent, node)
@@ -210,13 +218,15 @@ class CommandAgentAdapter(AgentAdapter):
             budget_ledger=self.budget_ledger,
         )
         raw = self._run_json_command(
-            self.executor_command,
+            command,
             cwd=Path(node.sandbox_path),
             prompt=prompt,
             payload=payload,
             telemetry=telemetry,
             logs_dir=logs_dir,
             action="execute",
+            role="executor",
+            role_config=role_config,
             sensing=sensing,
         )
         if not isinstance(raw, dict):
@@ -239,7 +249,9 @@ class CommandAgentAdapter(AgentAdapter):
         parent: SearchNode | None,
         node: SearchNode,
     ) -> Insight:
-        if not self.reflector_command:
+        role_config = role_config_for(self.role_configs, "reflector")
+        command = role_config.command or self.reflector_command
+        if not command:
             return self.fallback.reflect(task, task_snapshot, root, parent, node)
 
         payload = build_reflection_payload(task_snapshot, root, parent, node)
@@ -263,13 +275,15 @@ class CommandAgentAdapter(AgentAdapter):
             budget_ledger=self.budget_ledger,
         )
         raw = self._run_json_command(
-            self.reflector_command,
+            command,
             cwd=self.repo_root,
             prompt=prompt,
             payload=payload,
             telemetry=telemetry,
             logs_dir=logs_dir,
             action="reflect",
+            role="reflector",
+            role_config=role_config,
             sensing=sensing,
         )
         if not isinstance(raw, dict):
@@ -300,6 +314,8 @@ class CommandAgentAdapter(AgentAdapter):
         telemetry: dict[str, Any],
         logs_dir: Path,
         action: str,
+        role: str,
+        role_config: AgentRoleConfig,
         sensing,
     ) -> Any:
         return run_json_command(
@@ -314,6 +330,8 @@ class CommandAgentAdapter(AgentAdapter):
             error_cls=AgentStepError,
             timeout_seconds=self.command_timeout_seconds,
             budget_ledger=self.budget_ledger,
+            role=role,
+            role_config=role_config,
         )
 
 

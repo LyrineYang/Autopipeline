@@ -7,6 +7,7 @@ from .sensing import SensingConfig, SensingRuntime, build_sensing_summary
 from .search import TreeSearchEngine
 from .types import (
     BranchBudgetHint,
+    AgentRoleConfig,
     BottleneckCard,
     EvaluationResult,
     ExecutionResult,
@@ -27,6 +28,7 @@ from .planner import Planner, PlannerPacket
 
 __all__ = [
     "AgentAdapter",
+    "AgentRoleConfig",
     "BranchEngine",
     "BranchBudgetHint",
     "BottleneckCard",

@@ -58,6 +58,23 @@ class BudgetLedgerTests(unittest.TestCase):
         self.assertEqual(summary["agent_usage"]["total_tokens"], 140)
         self.assertEqual(summary["agent_usage"]["remaining_agent_calls"], 2)
 
+    def test_records_role_usage_and_failure_classes(self) -> None:
+        ledger = BudgetLedger()
+
+        ledger.record_command(
+            action="execute",
+            role="executor",
+            status="timed_out",
+            duration_seconds=2.0,
+            failure_class="zero_call_timeout",
+            output=None,
+        )
+
+        summary = ledger.summary()
+        self.assertEqual(summary["role_stats"]["executor"]["calls"], 1)
+        self.assertEqual(summary["role_stats"]["executor"]["timeouts"], 1)
+        self.assertEqual(summary["role_stats"]["executor"]["failure_classes"]["zero_call_timeout"], 1)
+
     def test_family_and_probe_stats_generate_budget_recommendations(self) -> None:
         ledger = BudgetLedger(max_probe_calls=5)
         parent = SearchNode(

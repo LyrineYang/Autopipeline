@@ -19,6 +19,9 @@ class Hypothesis:
     id: str
     title: str
     core_hypothesis: str
+    idea_id: str = ""
+    implementation_variant: str = ""
+    implementation_steps: list[str] = field(default_factory=list)
     scope: str = ""
     target: str = ""
     constraints_summary: str = ""
@@ -69,6 +72,19 @@ class BranchBudgetHint:
 class ResourceHint:
     tier: str = "balanced"
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AgentRoleConfig:
+    command: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+    timeout_seconds: float | None = None
+    max_output_tokens: int | None = None
+    reasoning_effort: str | None = None
+    temperature: float | None = None
+    subagent: str | None = None
 
 
 @dataclass(slots=True)
@@ -158,6 +174,10 @@ class SearchConfig:
     max_rounds: int
     children_per_expansion: int
     sandbox_backend: str = "copy"
+    planner_handoff_mode: str = "variant"
+    max_parallel_branches: int = 1
+    branch_resource_policy: str = "conservative"
+    role_configs: dict[str, AgentRoleConfig] = field(default_factory=dict)
     planner_command: str | None = None
     executor_command: str | None = None
     reflector_command: str | None = None

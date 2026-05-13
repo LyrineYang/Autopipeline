@@ -80,6 +80,23 @@ The tree run writes:
 - probe history under `nodes/.../sensing/`
 - promoted output next to the source kernel when a node wins
 
+You can build the first human-facing run view after a run finishes:
+
+```bash
+python3 scripts/tree_report.py <run-dir>
+```
+
+This writes:
+
+- `view/run_summary.json`
+- `view/branches.jsonl`
+- `view/attempts.jsonl`
+- `view/metrics_catalog.json`
+- `view/human_timeline.jsonl`
+- `view/iteration_effect.svg`
+- `view/dashboard.html`
+- `view/summary.md`
+
 ## Current Scope
 
 What this adapter is good at:

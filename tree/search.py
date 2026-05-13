@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 
 from .agent import AgentAdapter, AgentStepError
+from .archive import RunArchive
 from .branch_engine import BranchEngine
 from .budget import BudgetLedger
+from .roles import normalize_role_configs, role_config_for
 from .task import OptimizationTask, validate_sandbox_backend
 from .types import (
     ExecutionResult,
@@ -38,11 +42,14 @@ class TreeSearchEngine:
         self.state_path = self.run_dir / "search_state.json"
         self.events_path = self.run_dir / "tree_events.jsonl"
         self.task_snapshot = self.task.snapshot()
+        self.config.role_configs = normalize_role_configs(self.config.role_configs)
         self.root_memory = RootMemory(objective=self.task_snapshot.objective)
         self.budget_ledger = BudgetLedger(
             max_agent_calls=config.max_agent_calls,
             max_probe_calls=config.max_probe_calls,
         )
+        self.archive = RunArchive(self.run_dir, task_snapshot=self.task_snapshot)
+        self._state_lock = threading.RLock()
         self.nodes: dict[str, SearchNode] = {}
         self.frontier_node_ids: list[str] = []
         self.final_result: SearchResult | None = None
@@ -51,10 +58,16 @@ class TreeSearchEngine:
             planner_command=config.planner_command,
             command_timeout_seconds=config.command_timeout_seconds,
             budget_ledger=self.budget_ledger,
+            planner_handoff_mode=config.planner_handoff_mode,
+            role_configs=config.role_configs,
+            motif_archive=self.archive,
         )
         budget_setter = getattr(self.agent, "set_budget_ledger", None)
         if callable(budget_setter):
             budget_setter(self.budget_ledger)
+        role_setter = getattr(self.agent, "set_role_configs", None)
+        if callable(role_setter):
+            role_setter(config.role_configs)
         self.branch_engine = BranchEngine(
             task=self.task,
             agent=self.agent,
@@ -86,6 +99,7 @@ class TreeSearchEngine:
                 break
 
             accepted_this_round: list[SearchNode] = []
+            round_node_parents: list[tuple[SearchNode, SearchNode]] = []
             effective_beam_width = 1
             for parent, packet in active_parent_packets:
                 effective_children = self._effective_children_limit(packet)
@@ -113,6 +127,7 @@ class TreeSearchEngine:
                         "proposal_count": len(proposals),
                     },
                 )
+                pending_node_parents: list[tuple[SearchNode, SearchNode]] = []
                 for hypothesis in proposals[:effective_children]:
                     if self._is_duplicate_hypothesis(hypothesis):
                         continue
@@ -126,10 +141,14 @@ class TreeSearchEngine:
                         "frozen_decisions": list(packet.frozen_decisions),
                         "branch_scope": hypothesis.scope,
                         "branch_target": hypothesis.target,
+                        "planner_handoff_mode": self.config.planner_handoff_mode,
                         "verification_intent": list(hypothesis.verification_intent),
                     }
                     self._record_hypothesis(node.hypothesis)
-                    self._run_candidate(node, parent)
+                    pending_node_parents.append((node, parent))
+                completed_nodes = self._run_candidate_batch(pending_node_parents)
+                round_node_parents.extend((node, parent) for node, parent in pending_node_parents)
+                for node in completed_nodes:
                     if node.status == "completed" and node.evaluation_result and node.evaluation_result.accepted:
                         accepted_this_round.append(node)
 
@@ -145,6 +164,14 @@ class TreeSearchEngine:
                 self.frontier_node_ids = next_frontier
             else:
                 promoted = set(self.frontier_node_ids)
+
+            for node, parent in round_node_parents:
+                self.archive.record_node(
+                    node=node,
+                    parent=parent,
+                    root=self.root_memory,
+                    budget_summary=self.budget_ledger.summary(),
+                )
 
             self.root_memory.rounds_completed = round_index + 1
             self._log_event(
@@ -283,27 +310,51 @@ class TreeSearchEngine:
         self.budget_ledger.record_node(node=node, parent=parent)
         self._persist_state()
 
+    def _run_candidate_batch(self, node_parents: list[tuple[SearchNode, SearchNode]]) -> list[SearchNode]:
+        if not node_parents:
+            return []
+        parallel_limit = self._parallel_branch_limit(len(node_parents))
+        if parallel_limit <= 1:
+            completed: list[SearchNode] = []
+            for node, parent in node_parents:
+                self._run_candidate(node, parent)
+                completed.append(node)
+            return completed
+
+        completed = []
+        with ThreadPoolExecutor(max_workers=parallel_limit) as pool:
+            future_to_node = {
+                pool.submit(self._run_candidate, node, parent): node
+                for node, parent in node_parents
+            }
+            for future in as_completed(future_to_node):
+                future.result()
+                completed.append(future_to_node[future])
+        completed.sort(key=lambda item: item.id)
+        return completed
+
     def _merge_completed_node(self, node: SearchNode) -> None:
-        if node.insight is not None:
-            if node.insight.polarity == "positive":
-                self.root_memory.positive_insights.append(node.insight.summary)
-            elif node.insight.polarity == "negative":
-                self.root_memory.negative_insights.append(node.insight.summary)
-            else:
-                self.root_memory.neutral_insights.append(node.insight.summary)
+        with self._state_lock:
+            if node.insight is not None:
+                if node.insight.polarity == "positive":
+                    self.root_memory.positive_insights.append(node.insight.summary)
+                elif node.insight.polarity == "negative":
+                    self.root_memory.negative_insights.append(node.insight.summary)
+                else:
+                    self.root_memory.neutral_insights.append(node.insight.summary)
 
-        if node.evaluation_result is None:
-            return
+            if node.evaluation_result is None:
+                return
 
-        if (
-            node.evaluation_result.accepted
-            and (
-                self.root_memory.best_score is None
-                or node.evaluation_result.score > self.root_memory.best_score
-            )
-        ):
-            self.root_memory.best_score = node.evaluation_result.score
-            self.root_memory.best_node_id = node.id
+            if (
+                node.evaluation_result.accepted
+                and (
+                    self.root_memory.best_score is None
+                    or node.evaluation_result.score > self.root_memory.best_score
+                )
+            ):
+                self.root_memory.best_score = node.evaluation_result.score
+                self.root_memory.best_node_id = node.id
 
     def _record_hypothesis(self, hypothesis: Hypothesis) -> None:
         fingerprint = _hypothesis_fingerprint(hypothesis)
@@ -314,25 +365,32 @@ class TreeSearchEngine:
         return _hypothesis_fingerprint(hypothesis) in self.root_memory.explored_hypotheses
 
     def _persist_state(self) -> None:
-        payload = {
-            "task_snapshot": asdict(self.task_snapshot),
-            "search_config": asdict(self.config),
-            "root_memory": asdict(self.root_memory),
-            "frontier_node_ids": list(self.frontier_node_ids),
-            "nodes": {node_id: asdict(node) for node_id, node in self.nodes.items()},
-            "final_result": asdict(self.final_result) if self.final_result else None,
-            "budget": self.budget_ledger.summary(),
-        }
-        self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        with self._state_lock:
+            payload = {
+                "task_snapshot": asdict(self.task_snapshot),
+                "search_config": asdict(self.config),
+                "root_memory": asdict(self.root_memory),
+                "frontier_node_ids": list(self.frontier_node_ids),
+                "nodes": {node_id: asdict(node) for node_id, node in self.nodes.items()},
+                "final_result": asdict(self.final_result) if self.final_result else None,
+                "budget": self.budget_ledger.summary(),
+                "archive": {
+                    "motifs": str(self.archive.motifs_path),
+                    "family_summary": str(self.archive.family_summary_path),
+                    "planner_prior": str(self.archive.planner_prior_path),
+                },
+            }
+            self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _log_event(self, event_type: str, payload: dict[str, object]) -> None:
-        event = {
-            "timestamp": _now_iso(),
-            "event": event_type,
-            "payload": payload,
-        }
-        with self.events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event) + "\n")
+        with self._state_lock:
+            event = {
+                "timestamp": _now_iso(),
+                "event": event_type,
+                "payload": payload,
+            }
+            with self.events_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event) + "\n")
 
     def _next_node_id(self) -> str:
         self._node_counter += 1
@@ -371,7 +429,7 @@ class TreeSearchEngine:
 
     def _should_expand_parent(self, parent: SearchNode, packet: PlannerPacket) -> bool:
         if (
-            (self.config.planner_command or self.config.executor_command or self.config.reflector_command)
+            self._uses_agent_commands()
             and not self.budget_ledger.can_start_agent_step()
         ):
             return False
@@ -379,6 +437,26 @@ class TreeSearchEngine:
         if policy is None or policy.branch_budget.rounds is None:
             return True
         return parent.depth < min(self.config.max_rounds, policy.branch_budget.rounds)
+
+    def _parallel_branch_limit(self, pending_count: int) -> int:
+        configured = max(1, int(self.config.max_parallel_branches or 1))
+        if str(self.config.branch_resource_policy).lower() == "serial":
+            return 1
+        if self._uses_agent_commands() and (
+            self.config.max_agent_calls is not None or self.config.max_probe_calls is not None
+        ):
+            return 1
+        return max(1, min(configured, pending_count))
+
+    def _uses_agent_commands(self) -> bool:
+        return bool(
+            self.config.planner_command
+            or self.config.executor_command
+            or self.config.reflector_command
+            or role_config_for(self.config.role_configs, "planner").command
+            or role_config_for(self.config.role_configs, "executor").command
+            or role_config_for(self.config.role_configs, "reflector").command
+        )
 
 
 def _now_iso() -> str:
@@ -405,4 +483,6 @@ def _hypothesis_fingerprint(hypothesis: Hypothesis) -> str:
     scope = hypothesis.scope.strip() or "unspecified"
     target = hypothesis.target.strip() or "current-target"
     core = hypothesis.core_hypothesis.strip()
-    return f"{scope}|{target}|{core}" if core else ""
+    variant = hypothesis.implementation_variant.strip()
+    steps = "|".join(step.strip() for step in hypothesis.implementation_steps if step.strip())
+    return f"{scope}|{target}|{core}|{variant}|{steps}" if core else ""

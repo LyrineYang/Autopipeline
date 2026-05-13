@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .autokernel_probes import detect_hardware_context, run_autokernel_probe
+from .prior import kernel_optimization_prior, kernel_prior_family_ids
 from .task import OptimizationTask, create_copy_sandbox
 from .types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 
@@ -27,6 +28,7 @@ _DOWNSTREAM_REGIONS_DOC_RE = re.compile(r"Downstream regions:\s*(?P<regions>.+)"
 _PROFILE_BOTTLENECKS_DOC_RE = re.compile(r"(?:Profile bottlenecks|Bottleneck hints):\s*(?P<hints>.+)")
 
 _KERNEL_LOCAL_FAMILIES = {
+    *kernel_prior_family_ids(include_aliases=True),
     "memory_hierarchy",
     "parallelization",
     "occupancy_launch",
@@ -372,6 +374,7 @@ class AutoKernelTask(OptimizationTask):
         )
         return {
             "static_prior": self.profile_prior,
+            "optimization_prior": kernel_optimization_prior(),
             "hardware_context": hardware_context,
             "evaluator_prior": evaluator_prior,
             "history_context": history_context,

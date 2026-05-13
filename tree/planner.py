@@ -7,8 +7,10 @@ from typing import Any
 
 from .command import run_json_command
 from .prompts import build_planner_payload, build_planner_prompt, build_planner_telemetry
+from .roles import normalize_role_configs, role_config_for
 from .sensing import SensingRuntime
 from .types import (
+    AgentRoleConfig,
     BranchBudgetHint,
     BottleneckCard,
     Hypothesis,
@@ -50,10 +52,16 @@ class Planner:
         planner_command: str | None = None,
         command_timeout_seconds: float | None = 600,
         budget_ledger: Any | None = None,
+        planner_handoff_mode: str = "variant",
+        role_configs: dict[str, AgentRoleConfig] | None = None,
+        motif_archive: Any | None = None,
     ) -> None:
         self.planner_command = planner_command
         self.command_timeout_seconds = command_timeout_seconds
         self.budget_ledger = budget_ledger
+        self.planner_handoff_mode = _normalize_planner_handoff_mode(planner_handoff_mode)
+        self.role_configs = normalize_role_configs(role_configs)
+        self.motif_archive = motif_archive
 
     def build_packet(
         self,
@@ -71,7 +79,7 @@ class Planner:
                 task_snapshot=task_snapshot,
                 root=root,
                 parent=parent,
-                raw_context=_with_budget_context({}, self.budget_ledger),
+                raw_context=self._prepare_context({}),
                 limit=limit,
                 upper_bounds=upper_bounds or {},
             )
@@ -80,9 +88,9 @@ class Planner:
             raw_context = context_provider(parent, root, limit, upper_bounds=upper_bounds or {})
         else:
             raw_context = context_provider(parent, root, limit)
-        raw_context = _with_budget_context(raw_context, self.budget_ledger)
+        raw_context = self._prepare_context(raw_context)
 
-        if self.planner_command:
+        if self._planner_command():
             return self._planner_packet(
                 task=task,
                 task_snapshot=task_snapshot,
@@ -139,8 +147,9 @@ class Planner:
             task=task,
             budget_ledger=self.budget_ledger,
         )
+        role_config = role_config_for(self.role_configs, "planner")
         raw = run_json_command(
-            self.planner_command,
+            self._planner_command(),
             cwd=cwd,
             prompt=prompt,
             payload=payload,
@@ -151,6 +160,8 @@ class Planner:
             error_cls=PlannerStepError,
             timeout_seconds=self.command_timeout_seconds,
             budget_ledger=self.budget_ledger,
+            role="planner",
+            role_config=role_config,
         )
         return self._packet_from_output(
             task=task,
@@ -214,8 +225,9 @@ class Planner:
                 defaults,
                 planner_rules,
             ) or defaults
+        branch_cards = [self._apply_handoff_mode(card) for card in branch_cards]
         static_prior = _dict_value(raw_context.get("static_prior"))
-        if not static_prior and not raw_context:
+        if not static_prior and not _has_task_context(raw_context):
             static_prior = {"source": "seed_hypotheses"}
         region_graph = self._build_region_graph(raw_context, task_snapshot)
         bottleneck_card = self._build_bottleneck_card(
@@ -251,6 +263,27 @@ class Planner:
             ),
         )
 
+    def _prepare_context(self, raw_context: Any) -> dict[str, Any]:
+        context = _with_budget_context(raw_context, self.budget_ledger)
+        prior_builder = getattr(self.motif_archive, "planner_prior", None)
+        if callable(prior_builder):
+            context = {**context, "motif_prior": prior_builder()}
+        return {**context, "planner_handoff_mode": self.planner_handoff_mode}
+
+    def _planner_command(self) -> str | None:
+        role_config = role_config_for(self.role_configs, "planner")
+        return role_config.command or self.planner_command
+
+    def _apply_handoff_mode(self, hypothesis: Hypothesis) -> Hypothesis:
+        if self.planner_handoff_mode == "detailed":
+            return hypothesis
+        if self.planner_handoff_mode == "variant":
+            hypothesis.implementation_steps = []
+            return hypothesis
+        hypothesis.implementation_variant = ""
+        hypothesis.implementation_steps = []
+        return hypothesis
+
     def _build_branch_cards(
         self,
         raw_context: dict[str, Any],
@@ -282,7 +315,10 @@ class Planner:
                 hypothesis.scope = scope
             dedupe_key = (
                 hypothesis.id.strip()
-                or f"{hypothesis.scope.strip()}|{hypothesis.target.strip()}|{hypothesis.core_hypothesis.strip()}"
+                or (
+                    f"{hypothesis.scope.strip()}|{hypothesis.target.strip()}|"
+                    f"{hypothesis.core_hypothesis.strip()}|{hypothesis.implementation_variant.strip()}"
+                )
                 or hypothesis.title.strip()
                 or f"branch-{index + 1}"
             )
@@ -450,6 +486,25 @@ def _with_budget_context(raw_context: Any, budget_ledger: Any | None) -> dict[st
     }
 
 
+def _normalize_planner_handoff_mode(value: str) -> str:
+    mode = str(value or "variant").strip().lower()
+    return mode if mode in {"idea", "variant", "detailed"} else "variant"
+
+
+def _has_task_context(raw_context: dict[str, Any]) -> bool:
+    keys = set(raw_context)
+    keys.discard("planner_handoff_mode")
+    keys.discard("budget_context")
+    motif_prior = raw_context.get("motif_prior")
+    if isinstance(motif_prior, dict) and not any(motif_prior.values()):
+        keys.discard("motif_prior")
+    if keys == {"history_context"}:
+        history = _dict_value(raw_context.get("history_context"))
+        if set(history) <= {"budget_context"}:
+            keys.clear()
+    return bool(keys)
+
+
 def _dict_value(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -480,6 +535,9 @@ def _normalize_hypothesis(
             id=item.id,
             title=item.title,
             core_hypothesis=item.core_hypothesis,
+            idea_id=item.idea_id,
+            implementation_variant=item.implementation_variant,
+            implementation_steps=list(item.implementation_steps),
             scope=item.scope,
             target=item.target,
             constraints_summary=item.constraints_summary,
@@ -497,6 +555,9 @@ def _normalize_hypothesis(
             id=default.id if default is not None else f"hypothesis-{index + 1}",
             title=default.title if default is not None else f"Hypothesis {index + 1}",
             core_hypothesis=item.strip(),
+            idea_id=default.idea_id if default is not None else "",
+            implementation_variant=default.implementation_variant if default is not None else "",
+            implementation_steps=list(default.implementation_steps) if default is not None else [],
             scope=default.scope if default is not None else "",
             target=default.target if default is not None else "",
             constraints_summary=default.constraints_summary if default is not None else "",
@@ -515,6 +576,9 @@ def _normalize_hypothesis(
     hints = item.get("editable_path_hints")
     if hints is not None and not isinstance(hints, list):
         raise PlannerStepError("editable_path_hints must be a JSON list when present.")
+    implementation_steps = item.get("implementation_steps")
+    if implementation_steps is not None and not isinstance(implementation_steps, list):
+        raise PlannerStepError("implementation_steps must be a JSON list when present.")
 
     return Hypothesis(
         id=str(item.get("id", default.id if default is not None else f"hypothesis-{index + 1}")),
@@ -522,6 +586,18 @@ def _normalize_hypothesis(
         core_hypothesis=str(
             item.get("core_hypothesis", default.core_hypothesis if default is not None else "")
         ).strip(),
+        idea_id=str(item.get("idea_id", default.idea_id if default is not None else "")),
+        implementation_variant=str(
+            item.get(
+                "implementation_variant",
+                default.implementation_variant if default is not None else "",
+            )
+        ),
+        implementation_steps=(
+            [str(step) for step in implementation_steps]
+            if implementation_steps is not None
+            else list(default.implementation_steps) if default is not None else []
+        ),
         scope=str(item.get("scope", default.scope if default is not None else "")),
         target=str(item.get("target", default.target if default is not None else "")),
         constraints_summary=str(

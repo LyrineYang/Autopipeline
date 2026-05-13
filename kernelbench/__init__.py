@@ -9,6 +9,7 @@ Components:
     bridge.py   -- Load, cache, and set up KernelBench problems
     bench_kb.py -- Evaluate ModelNew vs Model (correctness + speedup)
     scorer.py   -- Batch scoring across levels, compute fast_p metric
+    task.py     -- Thin tree-framework adapter for one KernelBench problem
 """
 
 __version__ = "1.0.0"
