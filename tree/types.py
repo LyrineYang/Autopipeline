@@ -76,6 +76,7 @@ class ResourceHint:
 
 @dataclass(slots=True)
 class AgentRoleConfig:
+    backend: str | None = None
     command: str | None = None
     provider: str | None = None
     model: str | None = None

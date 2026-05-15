@@ -456,6 +456,9 @@ class TreeSearchEngine:
             or role_config_for(self.config.role_configs, "planner").command
             or role_config_for(self.config.role_configs, "executor").command
             or role_config_for(self.config.role_configs, "reflector").command
+            or role_config_for(self.config.role_configs, "planner").backend
+            or role_config_for(self.config.role_configs, "executor").backend
+            or role_config_for(self.config.role_configs, "reflector").backend
         )
 
 

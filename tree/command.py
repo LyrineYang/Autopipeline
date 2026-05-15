@@ -277,6 +277,8 @@ def logs_for(logs_dir: Path) -> dict[str, str]:
         "activity": str(logs_dir / "activity.jsonl"),
         "diagnostic": str(logs_dir / "timeout_diagnostic.json"),
         "env": str(logs_dir / "env_redacted.json"),
+        "app_server_events": str(logs_dir / "app_server_events.jsonl"),
+        "app_server_requests": str(logs_dir / "app_server_requests.jsonl"),
     }
 
 
@@ -394,6 +396,7 @@ def _redacted_environment_snapshot(
         "cwd": str(cwd),
         "timeout_seconds": timeout_seconds,
         "role_config": {
+            "backend": role_config.backend,
             "provider": role_config.provider,
             "model": role_config.model,
             "base_url_host": _host_only(role_config.base_url),

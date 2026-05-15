@@ -28,6 +28,7 @@ def normalize_role_config(value: Any) -> AgentRoleConfig:
     if not isinstance(value, dict):
         return AgentRoleConfig()
     return AgentRoleConfig(
+        backend=_optional_str(value.get("backend")),
         command=_optional_str(value.get("command")),
         provider=_optional_str(value.get("provider")),
         model=_optional_str(value.get("model")),
@@ -46,6 +47,7 @@ def role_config_for(configs: dict[str, AgentRoleConfig], role: str) -> AgentRole
 
 def add_role_config_args(parser: Any) -> None:
     for role in KNOWN_AGENT_ROLES:
+        parser.add_argument(f"--{role}-backend", default=None)
         parser.add_argument(f"--{role}-model", default=None)
         parser.add_argument(f"--{role}-provider", default=None)
         parser.add_argument(f"--{role}-base-url", default=None)
@@ -60,6 +62,7 @@ def build_role_configs_from_args(args: Any) -> dict[str, AgentRoleConfig]:
     configs: dict[str, AgentRoleConfig] = {}
     for role in KNOWN_AGENT_ROLES:
         config = AgentRoleConfig(
+            backend=_optional_str(getattr(args, f"{role}_backend", None)),
             provider=_optional_str(getattr(args, f"{role}_provider", None)),
             model=_optional_str(getattr(args, f"{role}_model", None)),
             base_url=_optional_str(getattr(args, f"{role}_base_url", None)),

@@ -234,6 +234,64 @@ class CommandAgentAdapterTests(unittest.TestCase):
         self.assertEqual(execution.metadata["subagent"], "worker")
         self.assertEqual(execution.metadata["timeout"], "3")
 
+    def test_executor_can_run_through_codex_app_server_backend(self) -> None:
+        script = self._write_script(
+            "fake_app_server.py",
+            """
+            import json
+            import sys
+            from pathlib import Path
+
+            def send(message):
+                print(json.dumps(message), flush=True)
+
+            for line in sys.stdin:
+                message = json.loads(line)
+                method = message.get("method")
+                if method == "initialize":
+                    send({"id": message["id"], "result": {"userAgent": "fake-codex"}})
+                elif method == "initialized":
+                    continue
+                elif method == "thread/start":
+                    send({"id": message["id"], "result": {"thread": {"id": "thread-test"}}})
+                    send({"method": "thread/started", "params": {"thread": {"id": "thread-test"}}})
+                elif method == "turn/start":
+                    Path("kernel.py").write_text("optimized\\n", encoding="utf-8")
+                    send({"id": message["id"], "result": {"turn": {"id": "turn-test", "status": "inProgress"}}})
+                    send({"method": "turn/started", "params": {"turn": {"id": "turn-test", "status": "inProgress"}}})
+                    send({"method": "turn/diff/updated", "params": {"threadId": "thread-test", "turnId": "turn-test", "diff": "--- a/kernel.py\\n+++ b/kernel.py\\n"}})
+                    send({"method": "thread/tokenUsage/updated", "params": {"totalTokens": 123}})
+                    send({"method": "item/completed", "params": {"item": {"id": "cmd-1", "type": "commandExecution", "status": "completed", "exitCode": 0, "durationMs": 7}}})
+                    send({"method": "item/completed", "params": {"item": {"id": "file-1", "type": "fileChange", "status": "completed", "changes": [{"path": "kernel.py", "kind": "update", "diff": "fake"}]}}})
+                    send({"method": "item/completed", "params": {"item": {"id": "msg-1", "type": "agentMessage", "text": "edited kernel"}}})
+                    send({"method": "turn/completed", "params": {"turn": {"id": "turn-test", "status": "completed"}}})
+                    break
+            """,
+        )
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            role_configs={
+                "executor": AgentRoleConfig(
+                    backend="codex-app-server",
+                    command=self._python_command(script),
+                    model="gpt-test",
+                )
+            },
+        )
+
+        execution = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        self.assertEqual(execution.status, "completed")
+        self.assertTrue(execution.changed)
+        self.assertEqual(Path(self.node.candidate_path).read_text(encoding="utf-8"), "optimized\n")
+        self.assertEqual(execution.metadata["backend"], "codex_app_server")
+        self.assertEqual(execution.metadata["thread_id"], "thread-test")
+        self.assertEqual(execution.metadata["turn_id"], "turn-test")
+        self.assertEqual(execution.metadata["token_usage"]["totalTokens"], 123)
+        logs_dir = Path(self.node.node_dir) / "agent" / "execute"
+        self.assertTrue((logs_dir / "app_server_events.jsonl").exists())
+        self.assertIn("turn_completed", (logs_dir / "activity.jsonl").read_text(encoding="utf-8"))
+
     def test_execute_can_consume_probe_results_in_same_step(self) -> None:
         script = self._write_script(
             "executor_same_step_probe.py",

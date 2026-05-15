@@ -363,10 +363,10 @@ class BranchEngine:
     def _role_command(self, role: str) -> str | None:
         role_config = role_config_for(self.config.role_configs, role)
         if role == "executor":
-            return role_config.command or self.config.executor_command
+            return role_config.command or self.config.executor_command or role_config.backend
         if role == "reflector":
-            return role_config.command or self.config.reflector_command
-        return role_config.command
+            return role_config.command or self.config.reflector_command or role_config.backend
+        return role_config.command or role_config.backend
 
     def _mark_budget_pruned(self, node: SearchNode) -> None:
         node.execution_result = ExecutionResult(

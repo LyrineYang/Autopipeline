@@ -6,6 +6,7 @@ from typing import Any
 from pathlib import Path
 
 from .command import logs_for as _logs_for, run_json_command
+from .codex_app_server import is_codex_app_server_backend, run_codex_app_server_executor
 from .prompts import (
     build_agent_telemetry,
     build_execution_payload,
@@ -190,7 +191,8 @@ class CommandAgentAdapter(AgentAdapter):
     ) -> ExecutionResult:
         role_config = role_config_for(self.role_configs, "executor")
         command = role_config.command or self.executor_command
-        if not command:
+        use_app_server = is_codex_app_server_backend(role_config)
+        if not command and not use_app_server:
             return self.fallback.execute(task, task_snapshot, root, parent, node)
 
         payload = build_execution_payload(task_snapshot, root, parent, node)
@@ -217,18 +219,33 @@ class CommandAgentAdapter(AgentAdapter):
             task=task,
             budget_ledger=self.budget_ledger,
         )
-        raw = self._run_json_command(
-            command,
-            cwd=Path(node.sandbox_path),
-            prompt=prompt,
-            payload=payload,
-            telemetry=telemetry,
-            logs_dir=logs_dir,
-            action="execute",
-            role="executor",
-            role_config=role_config,
-            sensing=sensing,
-        )
+        if use_app_server:
+            raw = run_codex_app_server_executor(
+                command,
+                cwd=Path(node.sandbox_path),
+                prompt=prompt,
+                payload=payload,
+                telemetry=telemetry,
+                logs_dir=logs_dir,
+                role_config=role_config,
+                sensing=sensing,
+                timeout_seconds=self.command_timeout_seconds,
+                budget_ledger=self.budget_ledger,
+                error_cls=AgentStepError,
+            )
+        else:
+            raw = self._run_json_command(
+                command,
+                cwd=Path(node.sandbox_path),
+                prompt=prompt,
+                payload=payload,
+                telemetry=telemetry,
+                logs_dir=logs_dir,
+                action="execute",
+                role="executor",
+                role_config=role_config,
+                sensing=sensing,
+            )
         if not isinstance(raw, dict):
             raise AgentStepError("Executor output must be a JSON object.")
 
