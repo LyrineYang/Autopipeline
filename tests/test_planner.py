@@ -7,10 +7,10 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from tree.planner import Planner
+from tree.planner import Planner, PlannerStepError
 from tree.prior import kernel_optimization_prior
 from tree.prompts import build_planner_prompt
-from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
+from tree.types import AgentRoleConfig, EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 
 
 class SeedOnlyTask:
@@ -428,6 +428,103 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(packet.branch_cards[0].family, "unspecified")
         self.assertEqual(packet.search_policy.recommended_scope, "kernel")
         self.assertEqual(packet.search_policy.scope_options, ["kernel"])
+
+    def test_planner_can_run_through_codex_app_server_backend(self) -> None:
+        script = Path(self.tempdir.name) / "planner_app_server.py"
+        script.write_text(
+            textwrap.dedent(
+                """
+                import json
+                import sys
+
+                def send(message):
+                    print(json.dumps(message), flush=True)
+
+                planner_output = {
+                    "branch_cards": [
+                        {
+                            "id": "appserver-1",
+                            "title": "App server branch",
+                            "core_hypothesis": "plan from app-server",
+                            "family": "memory_hierarchy",
+                        }
+                    ],
+                    "frozen_decisions": ["use app-server planner"],
+                }
+
+                for line in sys.stdin:
+                    message = json.loads(line)
+                    method = message.get("method")
+                    if method == "initialize":
+                        send({"id": message["id"], "result": {}})
+                    elif method == "initialized":
+                        continue
+                    elif method == "thread/start":
+                        send({"id": message["id"], "result": {"thread": {"id": "thread-plan"}}})
+                    elif method == "turn/start":
+                        send({"id": message["id"], "result": {"turn": {"id": "turn-plan", "status": "inProgress"}}})
+                        send({"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": json.dumps(planner_output)}}})
+                        send({"method": "turn/completed", "params": {"turn": {"id": "turn-plan", "status": "completed"}}})
+                        break
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        packet = Planner(
+            role_configs={
+                "planner": AgentRoleConfig(
+                    backend="codex-app-server",
+                    command=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+                )
+            }
+        ).build_packet(ContextTask(), self.snapshot, self.root, self.parent, 1)
+
+        self.assertEqual(packet.branch_cards[0].id, "appserver-1")
+        self.assertEqual(packet.frozen_decisions, ["use app-server planner"])
+        self.assertTrue((Path(self.parent.node_dir) / "agent" / "planner" / "output.json").exists())
+        self.assertTrue((Path(self.parent.node_dir) / "agent" / "planner_codex_session.json").exists())
+
+    def test_failed_app_server_planner_turn_raises(self) -> None:
+        script = Path(self.tempdir.name) / "planner_failed_app_server.py"
+        script.write_text(
+            textwrap.dedent(
+                """
+                import json
+                import sys
+
+                def send(message):
+                    print(json.dumps(message), flush=True)
+
+                for line in sys.stdin:
+                    message = json.loads(line)
+                    method = message.get("method")
+                    if method == "initialize":
+                        send({"id": message["id"], "result": {}})
+                    elif method == "initialized":
+                        continue
+                    elif method == "thread/start":
+                        send({"id": message["id"], "result": {"thread": {"id": "thread-plan-failed"}}})
+                    elif method == "turn/start":
+                        send({"id": message["id"], "result": {"turn": {"id": "turn-plan-failed", "status": "inProgress"}}})
+                        send({"method": "turn/completed", "params": {"turn": {"id": "turn-plan-failed", "status": "failed"}}})
+                        break
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        planner = Planner(
+            role_configs={
+                "planner": AgentRoleConfig(
+                    backend="codex-app-server",
+                    command=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+                )
+            }
+        )
+
+        with self.assertRaisesRegex(PlannerStepError, "turn ended with status failed"):
+            planner.build_packet(ContextTask(), self.snapshot, self.root, self.parent, 1)
 
     def test_planner_prompt_summarizes_problem_and_rules(self) -> None:
         raw_context = ContextTask().planner_context(self.parent, self.root, 2)

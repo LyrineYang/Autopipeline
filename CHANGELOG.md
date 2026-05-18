@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Tree Runtime And Agent Sessions
+
+- Added a task-agnostic tree runtime path for AutoKernel-compatible,
+  KernelBench, and generic pipeline workspace tasks.
+- Added Codex app-server session support for planner, executor, and reflector
+  roles, while keeping the legacy JSON command bridge for scripts and other
+  coding agents.
+- Added shared sensing probe handling for app-server dynamic tools and
+  `probe_requests.json` file probes.
+- Added branch-local search hardening around accepted baselines, reverted
+  candidates, final verification, timeouts, and role failures.
+
+### Open Source Readiness
+
+- Split user-facing docs from maintainer development notes under `docs/dev/`.
+- Added contribution, security, code of conduct, GitHub issue, pull request,
+  and CI scaffolding for public repository maintenance.
+- Updated package metadata so bundled kernel and model packages are included in
+  built wheels.
+- Prepared public project identity for the independent AutoPipeline repository.
+
 ## v1.3.0 -- 2026-03-13
 
 ### AMD ROCm GPU Support (PR #3 by @andyluo7)

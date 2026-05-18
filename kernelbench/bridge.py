@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KernelBench Bridge -- Load, cache, and set up KernelBench problems for AutoKernel.
+KernelBench Bridge -- Load, cache, and set up KernelBench problems for AutoPipeline.
 
 Supports three problem sources:
   1. HuggingFace dataset (ScalingIntelligence/KernelBench)
@@ -215,7 +215,7 @@ Operations: {ops_str}
 Difficulty: {analysis["estimated_difficulty"]}
 
 Source: ScalingIntelligence/KernelBench
-Optimized with AutoKernel (https://github.com/RightNow-AI/autokernel)
+Optimized with AutoPipeline (https://github.com/RightNow-AI/auto-pipeline)
 
 The agent optimizes ModelNew to outperform the PyTorch reference (Model).
 Edit ModelNew.forward() -- use CUDA C++ via compile_cuda() or Triton @jit.

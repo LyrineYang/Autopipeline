@@ -11,6 +11,7 @@ from .agent import AgentAdapter, AgentStepError
 from .archive import RunArchive
 from .branch_engine import BranchEngine
 from .budget import BudgetLedger
+from .codex_session import should_use_codex_app_server
 from .roles import normalize_role_configs, role_config_for
 from .task import OptimizationTask, validate_sandbox_backend
 from .types import (
@@ -449,16 +450,22 @@ class TreeSearchEngine:
         return max(1, min(configured, pending_count))
 
     def _uses_agent_commands(self) -> bool:
+        planner_config = role_config_for(self.config.role_configs, "planner")
+        executor_config = role_config_for(self.config.role_configs, "executor")
+        reflector_config = role_config_for(self.config.role_configs, "reflector")
         return bool(
             self.config.planner_command
             or self.config.executor_command
             or self.config.reflector_command
-            or role_config_for(self.config.role_configs, "planner").command
-            or role_config_for(self.config.role_configs, "executor").command
-            or role_config_for(self.config.role_configs, "reflector").command
-            or role_config_for(self.config.role_configs, "planner").backend
-            or role_config_for(self.config.role_configs, "executor").backend
-            or role_config_for(self.config.role_configs, "reflector").backend
+            or planner_config.command
+            or executor_config.command
+            or reflector_config.command
+            or planner_config.backend
+            or executor_config.backend
+            or reflector_config.backend
+            or should_use_codex_app_server(planner_config, command=planner_config.command or self.config.planner_command)
+            or should_use_codex_app_server(executor_config, command=executor_config.command or self.config.executor_command)
+            or should_use_codex_app_server(reflector_config, command=reflector_config.command or self.config.reflector_command)
         )
 
 

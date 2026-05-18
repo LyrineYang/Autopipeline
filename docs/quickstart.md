@@ -19,7 +19,7 @@ uv sync
 uv run prepare.py
 ```
 
-## 2. Main AutoKernel Path
+## 2. AutoKernel-Compatible Path
 
 Profile a model:
 
@@ -39,7 +39,9 @@ Check that the benchmark works:
 uv run bench.py
 ```
 
-At this point the original AutoKernel loop is ready. See [program.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/program.md) for the long-running agent path.
+At this point the AutoKernel-compatible loop is ready. See
+[program.md](../program.md) for the
+long-running agent path.
 
 ## 3. Tree Adapter Smoke Test
 
@@ -68,9 +70,37 @@ Expected outputs:
 - per-node files under `workspace/tree_runs/.../nodes/`
 - a promoted `*_optimized.py` next to the source kernel
 
-## 4. External Agent Commands
+Other shipped entrypoints:
 
-The tree adapter can shell out to three optional commands:
+```bash
+uv run kernelbench/tree_run.py --source hf --level 1 --problem 1 --beam-width 1 --max-rounds 1 --children-per-expansion 1
+uv run pipeline/bridge.py smoke
+```
+
+## 4. Agent Runtime
+
+Codex roles default to the app-server session backend when configured with a
+Codex provider and no explicit legacy command:
+
+```bash
+uv run tree_optimize.py \
+  --kernel-file workspace/kernel_matmul_1.py \
+  --run-name codex-session-smoke \
+  --beam-width 1 \
+  --max-rounds 1 \
+  --children-per-expansion 1 \
+  --bench-arg=--quick \
+  --planner-provider codex \
+  --executor-provider codex \
+  --reflector-provider codex
+```
+
+The session backend records thread id, turn id, turn status, token usage,
+events, dynamic tool calls, and per-role session state under the node's
+`agent/` directory.
+
+The legacy command bridge is still available for local scripts and other
+coding agents. It can shell out to three optional commands:
 
 - `--planner-command`
 - `--executor-command`
@@ -85,11 +115,32 @@ These commands receive:
 - `TREE_PROBE_REQUESTS_PATH`
 - `TREE_PROBE_RESULTS_PATH`
 - `TREE_OUTPUT_PATH`
+- `TREE_CANCEL_PATH`
+- `TREE_ACTIVITY_PATH`
+- `TREE_AGENT_ROLE`
 
 This means an external planner / executor / reflector does not have to answer blindly.
 Within the same step it can read sensing, request more diagnostics, read probe results, and only then write its final output.
 
-For the practical details, see [docs/tree_adapter.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/tree_adapter.md).
+The command bridge also writes `command_status.json`, `activity.jsonl`,
+`timeout_diagnostic.json`, and `env_redacted.json` under the current step's
+agent log directory.
+
+The Codex CLI helper remains as a legacy command-bridge smoke path:
+
+```bash
+uv run tree_optimize.py \
+  --kernel-file workspace/kernel_matmul_1.py \
+  --run-name codex-wrapper-smoke \
+  --beam-width 1 \
+  --max-rounds 1 \
+  --children-per-expansion 1 \
+  --bench-arg=--quick \
+  --executor-command 'python3 scripts/codex_tree_agent.py execute --dry-run'
+```
+
+For the practical details, see
+[docs/tree_adapter.md](tree_adapter.md).
 
 ## 5. What To Run Regularly
 

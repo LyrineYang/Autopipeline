@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .agent import AgentAdapter
+from .codex_session import should_use_codex_app_server
 from .roles import role_config_for
 from .task import candidate_checkpoint_path, checkpoint_candidate, restore_candidate
 from .types import ExecutionResult, Insight, RootMemory, SearchConfig, SearchNode, TaskSnapshot
@@ -362,10 +363,21 @@ class BranchEngine:
 
     def _role_command(self, role: str) -> str | None:
         role_config = role_config_for(self.config.role_configs, role)
+        if role == "planner":
+            command = role_config.command or self.config.planner_command
+            if should_use_codex_app_server(role_config, command=command):
+                return "codex_app_server"
+            return command or role_config.backend
         if role == "executor":
+            command = role_config.command or self.config.executor_command
+            if should_use_codex_app_server(role_config, command=command):
+                return "codex_app_server"
             return role_config.command or self.config.executor_command or role_config.backend
         if role == "reflector":
-            return role_config.command or self.config.reflector_command or role_config.backend
+            command = role_config.command or self.config.reflector_command
+            if should_use_codex_app_server(role_config, command=command):
+                return "codex_app_server"
+            return command or role_config.backend
         return role_config.command or role_config.backend
 
     def _mark_budget_pruned(self, node: SearchNode) -> None:

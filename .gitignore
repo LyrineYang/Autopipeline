@@ -16,12 +16,15 @@ AGENTS.md
 
 # Experimental artifacts
 dev/
+!docs/dev/
+!docs/dev/*.md
 results.tsv
 run.log
 *.log
 
 # Cache
 .cache/
+uv.lock
 
 # Analysis output (regenerated)
 report.md

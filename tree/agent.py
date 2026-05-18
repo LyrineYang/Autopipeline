@@ -5,8 +5,9 @@ from typing import Any
 
 from pathlib import Path
 
-from .command import logs_for as _logs_for, run_json_command
-from .codex_app_server import is_codex_app_server_backend, run_codex_app_server_executor
+from .agent_backend import AgentRunRequest, role_uses_app_server, run_agent_role
+from .command import logs_for as _logs_for
+from .codex_session import registry_path_for_node_dir
 from .prompts import (
     build_agent_telemetry,
     build_execution_payload,
@@ -191,7 +192,7 @@ class CommandAgentAdapter(AgentAdapter):
     ) -> ExecutionResult:
         role_config = role_config_for(self.role_configs, "executor")
         command = role_config.command or self.executor_command
-        use_app_server = is_codex_app_server_backend(role_config)
+        use_app_server = role_uses_app_server(role_config, command)
         if not command and not use_app_server:
             return self.fallback.execute(task, task_snapshot, root, parent, node)
 
@@ -219,23 +220,9 @@ class CommandAgentAdapter(AgentAdapter):
             task=task,
             budget_ledger=self.budget_ledger,
         )
-        if use_app_server:
-            raw = run_codex_app_server_executor(
-                command,
-                cwd=Path(node.sandbox_path),
-                prompt=prompt,
-                payload=payload,
-                telemetry=telemetry,
-                logs_dir=logs_dir,
-                role_config=role_config,
-                sensing=sensing,
-                timeout_seconds=self.command_timeout_seconds,
-                budget_ledger=self.budget_ledger,
-                error_cls=AgentStepError,
-            )
-        else:
-            raw = self._run_json_command(
-                command,
+        raw = run_agent_role(
+            AgentRunRequest(
+                command=command,
                 cwd=Path(node.sandbox_path),
                 prompt=prompt,
                 payload=payload,
@@ -245,7 +232,14 @@ class CommandAgentAdapter(AgentAdapter):
                 role="executor",
                 role_config=role_config,
                 sensing=sensing,
+                timeout_seconds=self.command_timeout_seconds,
+                budget_ledger=self.budget_ledger,
+                session_key=node.id,
+                session_registry_path=registry_path_for_node_dir(Path(node.node_dir)),
+                output_mode="execution_diff" if use_app_server else "json_file",
+                error_cls=AgentStepError,
             )
+        )
         if not isinstance(raw, dict):
             raise AgentStepError("Executor output must be a JSON object.")
 
@@ -268,7 +262,8 @@ class CommandAgentAdapter(AgentAdapter):
     ) -> Insight:
         role_config = role_config_for(self.role_configs, "reflector")
         command = role_config.command or self.reflector_command
-        if not command:
+        use_app_server = role_uses_app_server(role_config, command)
+        if not command and not use_app_server:
             return self.fallback.reflect(task, task_snapshot, root, parent, node)
 
         payload = build_reflection_payload(task_snapshot, root, parent, node)
@@ -291,17 +286,25 @@ class CommandAgentAdapter(AgentAdapter):
             task=task,
             budget_ledger=self.budget_ledger,
         )
-        raw = self._run_json_command(
-            command,
-            cwd=self.repo_root,
-            prompt=prompt,
-            payload=payload,
-            telemetry=telemetry,
-            logs_dir=logs_dir,
-            action="reflect",
-            role="reflector",
-            role_config=role_config,
-            sensing=sensing,
+        raw = run_agent_role(
+            AgentRunRequest(
+                command=command,
+                cwd=self.repo_root,
+                prompt=prompt,
+                payload=payload,
+                telemetry=telemetry,
+                logs_dir=logs_dir,
+                action="reflect",
+                role="reflector",
+                role_config=role_config,
+                sensing=sensing,
+                timeout_seconds=self.command_timeout_seconds,
+                budget_ledger=self.budget_ledger,
+                session_key=f"{node.id}:reflector",
+                session_registry_path=registry_path_for_node_dir(Path(node.node_dir)),
+                output_mode="json_message" if use_app_server else "json_file",
+                error_cls=AgentStepError,
+            )
         )
         if not isinstance(raw, dict):
             raise AgentStepError("Reflector output must be a JSON object.")
@@ -320,37 +323,6 @@ class CommandAgentAdapter(AgentAdapter):
             evidence=[str(item) for item in evidence],
             source_node_id=node.id,
         )
-
-    def _run_json_command(
-        self,
-        command: str,
-        *,
-        cwd: Path,
-        prompt: str,
-        payload: dict[str, Any],
-        telemetry: dict[str, Any],
-        logs_dir: Path,
-        action: str,
-        role: str,
-        role_config: AgentRoleConfig,
-        sensing,
-    ) -> Any:
-        return run_json_command(
-            command,
-            cwd=cwd,
-            prompt=prompt,
-            payload=payload,
-            telemetry=telemetry,
-            logs_dir=logs_dir,
-            action=action,
-            sensing=sensing,
-            error_cls=AgentStepError,
-            timeout_seconds=self.command_timeout_seconds,
-            budget_ledger=self.budget_ledger,
-            role=role,
-            role_config=role_config,
-        )
-
 
 def _basic_evidence(node: SearchNode) -> list[str]:
     if node.evaluation_result is None:

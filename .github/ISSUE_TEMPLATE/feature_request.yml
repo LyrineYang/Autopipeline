@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a focused improvement.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow, benchmark, or agent integration is blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should AutoPipeline do differently?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - AutoKernel-compatible kernel loop
+        - Tree runtime
+        - KernelBench adapter
+        - Pipeline bridge
+        - Agent runtime
+        - Sensing / verifier
+        - Documentation
+    validations:
+      required: true

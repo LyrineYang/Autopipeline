@@ -5,7 +5,8 @@ import inspect
 from pathlib import Path
 from typing import Any
 
-from .command import run_json_command
+from .agent_backend import AgentRunRequest, role_uses_app_server, run_agent_role
+from .codex_session import registry_path_for_node_dir
 from .prompts import build_planner_payload, build_planner_prompt, build_planner_telemetry
 from .roles import normalize_role_configs, role_config_for
 from .sensing import SensingRuntime
@@ -90,7 +91,9 @@ class Planner:
             raw_context = context_provider(parent, root, limit)
         raw_context = self._prepare_context(raw_context)
 
-        if self._planner_command():
+        role_config = role_config_for(self.role_configs, "planner")
+        command = role_config.command or self.planner_command
+        if command or role_uses_app_server(role_config, command):
             return self._planner_packet(
                 task=task,
                 task_snapshot=task_snapshot,
@@ -148,20 +151,27 @@ class Planner:
             budget_ledger=self.budget_ledger,
         )
         role_config = role_config_for(self.role_configs, "planner")
-        raw = run_json_command(
-            self._planner_command(),
-            cwd=cwd,
-            prompt=prompt,
-            payload=payload,
-            telemetry=telemetry,
-            logs_dir=logs_dir,
-            action="plan",
-            sensing=sensing,
-            error_cls=PlannerStepError,
-            timeout_seconds=self.command_timeout_seconds,
-            budget_ledger=self.budget_ledger,
-            role="planner",
-            role_config=role_config,
+        command = role_config.command or self.planner_command
+        use_app_server = role_uses_app_server(role_config, command)
+        raw = run_agent_role(
+            AgentRunRequest(
+                command=command,
+                cwd=cwd,
+                prompt=prompt,
+                payload=payload,
+                telemetry=telemetry,
+                logs_dir=logs_dir,
+                action="plan",
+                role="planner",
+                role_config=role_config,
+                sensing=sensing,
+                timeout_seconds=self.command_timeout_seconds,
+                budget_ledger=self.budget_ledger,
+                session_key=f"{parent.id}:planner",
+                session_registry_path=registry_path_for_node_dir(Path(parent.node_dir)),
+                output_mode="json_message" if use_app_server else "json_file",
+                error_cls=PlannerStepError,
+            )
         )
         return self._packet_from_output(
             task=task,

@@ -12,11 +12,13 @@ For each planner, executor, or reflector step, sensing:
 2. accepts probe requests
 3. executes those requests safely
 4. records results and recent history
+5. refreshes verifier evidence after probe results arrive
 
 The intended split is:
 
 - agent decides what evidence it needs
 - sensing runs the request and records the result
+- app-server dynamic tools or the legacy command bridge serve the requests while the agent step is running
 
 ## How To Think About Probes
 
@@ -56,8 +58,13 @@ This one is intentionally split from the calculation itself:
 
 In code, these are implemented by:
 
-- built-in file probes in [tree/sensing.py](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/tree/sensing.py)
-- task-specific probes in [tree/autokernel_probes.py](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/tree/autokernel_probes.py)
+- built-in file, command, Python, and theoretical-limit probes in [tree/sensing.py](../tree/sensing.py)
+- task-specific AutoKernel probes in [tree/autokernel_probes.py](../tree/autokernel_probes.py)
+- pipeline metric probes in [pipeline/task.py](../pipeline/task.py)
+
+Probe execution is budget-aware. `BudgetLedger` can reject new probes after
+`--max-probe-calls` is exhausted, and sensing records those rejections as
+diagnostic results.
 
 ## Practical Model
 
@@ -67,10 +74,23 @@ In plain language, the runtime works like this:
 - it reads the current sensing manifest
 - if evidence is missing, it asks for a probe
 - sensing runs the probe
-- the result is written back during the same step
+- the result is written back during the same command step
+- the manifest is refreshed with recent probe results and verifier evidence
 - the agent can continue using that result immediately
 
 That is the current active-sensing loop.
+
+Mechanically, [tree/command.py](../tree/command.py)
+does the legacy file serving loop. It initializes empty probe request/result
+files, launches the role command, notices when `TREE_PROBE_REQUESTS_PATH`
+changes, calls `SensingRuntime.serve_pending(...)`, and finally calls
+`finalize(...)` once the subprocess exits.
+
+For Codex app-server sessions, [tree/codex_dynamic_tools.py](../tree/codex_dynamic_tools.py)
+registers `run_sensing_probe` as a dynamic tool. It calls the same
+`SensingRuntime` probe handlers and records results into the same manifest and
+history files. Dynamic tools are an additional transport, not a replacement for
+the microbench / probe design.
 
 For theoretical ceiling or roofline-style reasoning, the intended loop is:
 

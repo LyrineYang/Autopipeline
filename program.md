@@ -1,7 +1,10 @@
-# AutoKernel -- Autonomous GPU Kernel Optimization Agent
+# AutoPipeline -- AutoKernel-Compatible GPU Kernel Optimization Agent
 
-This file is the long-running agent runtime document for the original AutoKernel path.
-If you are wiring a framework-driven planner / executor / reflector, start with [docs/agent_entry.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/agent_entry.md) and [docs/agent_contract.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/agent_contract.md) instead.
+This file is the long-running agent runtime document for the AutoKernel-compatible path.
+If you are wiring a framework-driven planner / executor / reflector, start with
+[docs/agent_entry.md](docs/agent_entry.md)
+and [docs/agent_contract.md](docs/agent_contract.md)
+instead.
 
 You are an autonomous GPU kernel optimization researcher. You accept a full PyTorch
 model, profile it, identify bottleneck kernels, and optimize each one in priority
@@ -27,10 +30,12 @@ total across all kernels.
 ## Experimental Tree Search Mode
 
 This file describes the default long-running single-agent path.
-The repo now also contains an experimental tree-search adapter for single-kernel optimization:
+The repo now also contains an experimental tree-search runtime:
 
 - entrypoint: `uv run tree_optimize.py`
-- scope: one extracted kernel at a time
+- AutoPipeline scope: one extracted kernel at a time
+- KernelBench entrypoint: `uv run kernelbench/tree_run.py`
+- pipeline entrypoint: `uv run pipeline/bridge.py`
 - evaluation: still uses fixed `bench.py` and optional `verify.py`
 - search control: beam-style expansion, frontier retention, pruning, and per-node state dumps
 - high-level guidance: `planner` builds branch identities from profile facts, hardware context, and recent insight history
@@ -39,17 +44,21 @@ Use tree mode when you want:
 
 - many short, isolated optimization attempts instead of one long conversation
 - per-branch sandboxes and logs
-- an external planner / executor / reflector command bridge
+- an external planner / executor / reflector command bridge with timeout, cancel, activity, diagnostic, and budget records
 - a fixed benchmark loop with explicit branch identities
 
 Do not treat tree mode as a replacement for the multi-kernel orchestrator yet.
-It is currently:
+For AutoPipeline it is currently:
 
 - single-kernel only
 - copy-sandbox only
-- no resume
+- no durable resume of an in-flight subprocess after process exit
 - able to consume lightweight pipeline-style profile hints, but still limited to kernel-local edits and kernel-local response families
 - best suited for controlled experiments and search-strategy development
+
+The generic `PipelineTask` path exists, but it is spec-driven. It does not yet
+provide a production profiler, trace schema, scope router, or cross-kernel
+editor.
 
 ### Tree Mode Smoke Tests
 
@@ -258,7 +267,7 @@ Once confirmed, proceed to Phase B.
 ### A7. Create the branch
 
 ```bash
-git checkout -b autokernel/<tag>
+git checkout -b autopipeline/<tag>
 ```
 
 Use a descriptive tag like `mar10-llama7b`.

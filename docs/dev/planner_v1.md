@@ -181,6 +181,24 @@ v1 已经明确纳入：
 - 当前代码已经能承载轻量的 `RegionGraph` / `BottleneckCard`，也能读入 pipeline 风格的 scope、region、upstream/downstream、bottleneck hints
 - 但在今天的 AutoKernel 单-kernel harness 里，`planner` 仍然只会产出单文件可执行的 kernel-local family，不会假装当前 adapter 已经能执行 fusion、layout propagation、launch consolidation 这类跨 kernel 修改
 
+### 当前实现状态补记
+
+这份文档的早期表述把 pipeline task 写得偏“未来”。
+当前代码已经比那时往前走了一步：
+
+- `tree_optimize.py` 仍然是 AutoKernel extracted-kernel 的 tree CLI
+- `kernelbench/tree_run.py` 已经能把单个 KernelBench problem 接到同一套 tree runtime
+- `pipeline/bridge.py` 和 `pipeline/task.py` 已经提供 spec-driven generic pipeline workspace task
+- `tree/command.py` 已经负责 agent 命令的启动、文件通讯、同 step probe 服务、超时、取消、activity 记录、失败诊断和预算记录
+- `scripts/codex_tree_agent.py` 已经提供 executor 角色的 Codex CLI wrapper
+
+这里要保持边界清楚：
+
+- AutoKernel task 仍然只把实际代码修改落在 branch-local `kernel.py` surface
+- KernelBench task 仍然是单 problem / `kernel.py` surface
+- generic pipeline task 已经能评估 pipeline workspace metrics，但它不是 production pipeline profiler，也不是 fusion / layout propagation / cross-kernel editor
+- 当前 Codex planner / executor / reflector 已经有 app-server session backend；`scripts/codex_tree_agent.py` 仍是 `codex exec` 兼容 wrapper
+
 ## v1 还没有解决的关键抽象
 
 v1 目前主要服务于单-kernel 优化。
@@ -189,10 +207,12 @@ v1 目前主要服务于单-kernel 优化。
 
 这里当前代码和长期目标要明确分开：
 
-- 现在已经有的是“pipeline 风格诊断输入接口”
-- 现在还没有的是“真正的 pipeline task / profiler / editor”
+- 现在已经有的是“pipeline 风格诊断输入接口”和 spec-driven generic `PipelineTask`
+- 现在还没有的是“生产级 pipeline profiler / trace analyzer / cross-kernel editor”
 
-所以当前 `planner` 可以先利用更宽的 pipeline 上下文帮助单-kernel proposal 不那么盲，但它不会在 AutoKernelTask 里直接释放 pipeline-level treatment family。
+所以当前 `planner` 可以先利用更宽的 pipeline 上下文帮助单-kernel proposal 不那么盲。
+在 AutoKernelTask 里，它仍然不会直接释放 pipeline-level treatment family。
+在 PipelineTask 里，它可以处理 pipeline-scope branch identity，但实际能力仍受 spec 暴露的 workspace、metrics 和 editable paths 限制。
 
 下一步最重要的不是把树做得更复杂，而是补齐下面这层抽象：
 

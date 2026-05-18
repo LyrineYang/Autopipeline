@@ -1,6 +1,8 @@
 # Run Interaction Metrics
 
-这份文档先研究 run viewer 背后的数据和指标问题，不设计前端，也不先设计绘图逻辑。
+这份文档记录 run viewer 背后的数据和指标问题。
+早期版本只讨论数据契约；当前代码已经有 `tree/viewer.py` 和
+`scripts/tree_report.py`，可以生成 JSONL、SVG、HTML 和 Markdown 摘要。
 
 目标是把“agent 与人类交互”定义成一个稳定的数据通路：
 
@@ -197,11 +199,11 @@ Ray Tune 把 trial 的中间结果通过 `tune.report()` 送回调度器，`Tune
 - 一轮里发生了哪些动作。
 - 某个 node 的执行和评测事件。
 
-需要补强：
+当前状态：
 
-- event payload 的字段应该保持稳定。
-- evaluation event 应该带 enough metric fields，避免 viewer 再去追 raw logs。
-- branch-local iteration 应该成为一等字段。
+- event payload 已经包含 baseline / proposal / execution / evaluation / reflection / candidate / frontier / finished 等关键事件。
+- branch-local iteration 已经通过 `local_iteration` 进入 evaluation event，并由 `tree/viewer.py` 归一化成 attempt。
+- viewer 仍然要在缺字段时回看 node snapshot，所以 event payload 的长期稳定性还需要继续维护。
 
 ### Run Archive
 
@@ -245,9 +247,10 @@ Ray Tune 把 trial 的中间结果通过 `tune.report()` 送回调度器，`Tune
 - command-level cost 要能映射到 node / attempt。
 - activity 里的 agent API heartbeat 还依赖外部 command 主动写。
 
-## Missing Data
+## Attempt Records
 
-要让人类清晰理解优化过程，最缺的是 attempt record。
+`tree/viewer.py` 现在会从 `tree_events.jsonl` 和 `search_state.json` 生成 attempt record。
+要让人类清晰理解优化过程，后续重点是继续稳定 attempt 字段，而不是从零开始补这个层。
 
 ### Why Node-Level Is Not Enough
 

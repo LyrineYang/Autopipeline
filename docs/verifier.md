@@ -36,22 +36,33 @@ The verifier should not become a second analytics system.
 Today the verifier mainly looks at:
 
 - recent probe results
+- sensing's `objective_evaluation`
 - current node execution state
 - current node evaluation result
 - parent score
 - best known score
+- task-specific verifier augmentation when the task exposes it
 
-That is enough for a usable branch-level summary, but not enough for full infra or pipeline judgment.
+For pipeline-like tasks, sensing can build a small objective-evidence summary
+from metrics such as end-to-end latency, throughput, stage imbalance,
+communication time, sync time, overlap ratio, memory headroom, hardware fit, and
+GPU utilization. The verifier consumes that summary without becoming the owner
+of metric collection.
 
-## Future Direction
+## Current Boundary
 
-As the framework moves toward pipeline and infra work, the verifier should keep the same outer shape while consuming richer evidence:
+The verifier still does not run benchmarks, probes, or trace tools.
+It does not replace the evaluator.
+It only compresses evidence that already exists.
 
-- kernel-level results
-- stage-level timing
-- overlap and communication signals
-- end-to-end latency or throughput
-- hardware fit for the current machine and software stack
+The pipeline evidence path is useful but still thin:
+
+- it compares available scalar metrics
+- it reports missing objective signals
+- it can downgrade a branch when objective evidence regresses
+- it cannot infer a full cross-kernel optimization diagnosis by itself
+
+## Direction
 
 The target is simple:
 

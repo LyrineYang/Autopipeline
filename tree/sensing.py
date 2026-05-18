@@ -210,18 +210,72 @@ class SensingRuntime:
 
     def serve_pending(self, action: str, logs_dir: Path) -> bool:
         probe_requests_path = logs_dir / "probe_requests.json"
+        request_text = probe_requests_path.read_text(encoding="utf-8")
+        request_key = str(logs_dir.resolve())
+        previous_text = self._served_requests.get(request_key)
+        if request_text == previous_text:
+            return False
+
+        current_requests = _read_json_value(request_text)
+        previous_requests = _read_json_value(previous_text or "[]")
+        replace_source = "probe_requests"
+        if (
+            isinstance(current_requests, list)
+            and isinstance(previous_requests, list)
+            and len(current_requests) > len(previous_requests)
+            and current_requests[: len(previous_requests)] == previous_requests
+        ):
+            requests = current_requests[len(previous_requests) : self.config.max_probes_per_action]
+            results = [
+                self._run_probe(index, request)
+                for index, request in enumerate(requests, start=len(previous_requests))
+            ]
+            replace_source = None
+        else:
+            results = self._execute_probe_requests(request_text)
+        self._served_requests[request_key] = request_text
+        self._publish_probe_results(
+            action,
+            logs_dir,
+            results,
+            append=True,
+            source="probe_requests",
+            replace_source=replace_source,
+        )
+        return True
+
+    def run_probe_request(self, action: str, logs_dir: Path, request: dict[str, Any]) -> dict[str, Any]:
+        probe_results_path = logs_dir / "probe_results.json"
+        existing = _read_json_list(probe_results_path)
+        result = self._run_probe(len(existing), request)
+        self._publish_probe_results(action, logs_dir, [result], append=True, source="dynamic_tool")
+        return result
+
+    def _publish_probe_results(
+        self,
+        action: str,
+        logs_dir: Path,
+        results: list[dict[str, Any]],
+        *,
+        append: bool,
+        source: str,
+        replace_source: str | None = None,
+    ) -> None:
         probe_results_path = logs_dir / "probe_results.json"
         manifest_path = logs_dir / "sensing.json"
         passive_snapshot_path = logs_dir / "passive_snapshot.json"
-        request_text = probe_requests_path.read_text(encoding="utf-8")
-        request_key = str(logs_dir.resolve())
-        if request_text == self._served_requests.get(request_key):
-            return False
-
-        results = self._execute_probe_requests(request_text)
-        self._served_requests[request_key] = request_text
-        _write_json_atomic(probe_results_path, results)
-        self._record_probe_results(action, results)
+        probe_requests_path = logs_dir / "probe_requests.json"
+        tagged_results = [_with_probe_source(result, source) for result in results]
+        stored_results = _read_json_list(probe_results_path) if append else []
+        if replace_source is not None:
+            stored_results = [
+                result
+                for result in stored_results
+                if result.get("source") != replace_source
+            ]
+        stored_results.extend(tagged_results)
+        _write_json_atomic(probe_results_path, stored_results)
+        self._record_probe_results(action, tagged_results)
         recent_probe_results = self._recent_probe_results()
         sensing_summary = build_sensing_summary(
             task_snapshot=self.task_snapshot,
@@ -247,9 +301,8 @@ class SensingRuntime:
             recent_probe_results=recent_probe_results,
             sensing_summary=sensing_summary,
             verifier=verifier,
-            probe_result_count=len(results),
+            probe_result_count=len(stored_results),
         )
-        return True
 
     def finalize(self, action: str, logs_dir: Path) -> None:
         self.serve_pending(action, logs_dir)
@@ -844,6 +897,25 @@ def _safe_timeout(value: Any) -> int:
     except (TypeError, ValueError):
         return 30
     return max(1, timeout)
+
+
+def _read_json_list(path: Path) -> list[dict[str, Any]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _read_json_value(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _with_probe_source(result: dict[str, Any], source: str) -> dict[str, Any]:
+    return {**result, "source": source}
 
 
 def _write_json_atomic(path: Path, payload: Any) -> None:

@@ -143,14 +143,14 @@ DSPy 的参考价值在 metric-driven prompt / program optimization：
 
 当前已经有的基础：
 
-- [tree/search.py](/Users/nianzhen/Desktop/autokernel/tree/search.py) 管理 baseline、frontier、branch expansion、pruning、promotion。
-- [tree/planner.py](/Users/nianzhen/Desktop/autokernel/tree/planner.py) 产出 `PlannerPacket`，里面包括 static prior、hardware context、history context、`RegionGraph`、`BottleneckCard`、`SearchPolicyHint`、Branch Cards。
-- [tree/branch_engine.py](/Users/nianzhen/Desktop/autokernel/tree/branch_engine.py) 在一个固定 branch identity 下运行短 keep/revert loop。
-- [tree/command.py](/Users/nianzhen/Desktop/autokernel/tree/command.py) 给外部 planner / executor / reflector 写 prompt、payload、telemetry、output、stdout、stderr、status。
-- [tree/sensing.py](/Users/nianzhen/Desktop/autokernel/tree/sensing.py) 提供 passive snapshot、diagnostic probes、probe history、verifier summary。
-- [tree/budget.py](/Users/nianzhen/Desktop/autokernel/tree/budget.py) 记录 agent 使用量、API 调用量、令牌使用量、推理成本、probe 使用量、family 成败。
-- [pipeline/task.py](/Users/nianzhen/Desktop/autokernel/pipeline/task.py) 已经提供 generic pipeline workspace task 的雏形。
-- [kernelbench/task.py](/Users/nianzhen/Desktop/autokernel/kernelbench/task.py) 已经把 KernelBench problem surface 接到 tree task 协议。
+- [tree/search.py](../../tree/search.py) 管理 baseline、frontier、branch expansion、pruning、promotion。
+- [tree/planner.py](../../tree/planner.py) 产出 `PlannerPacket`，里面包括 static prior、hardware context、history context、`RegionGraph`、`BottleneckCard`、`SearchPolicyHint`、Branch Cards。
+- [tree/branch_engine.py](../../tree/branch_engine.py) 在一个固定 branch identity 下运行短 keep/revert loop。
+- [tree/command.py](../../tree/command.py) 给外部 planner / executor / reflector 写 prompt、payload、telemetry、output、stdout、stderr、status。
+- [tree/sensing.py](../../tree/sensing.py) 提供 passive snapshot、diagnostic probes、probe history、verifier summary。
+- [tree/budget.py](../../tree/budget.py) 记录 agent 使用量、API 调用量、令牌使用量、推理成本、probe 使用量、family 成败。
+- [pipeline/task.py](../../pipeline/task.py) 已经提供 generic pipeline workspace task 的雏形。
+- [kernelbench/task.py](../../kernelbench/task.py) 已经把 KernelBench problem surface 接到 tree task 协议。
 
 当前主要缺口：
 
@@ -361,38 +361,25 @@ TREE_AGENT_TIMEOUT_SECONDS=...
 
 把“agent command timed out”变成可定位的问题。
 
-当前 [tree/command.py](/Users/nianzhen/Desktop/autokernel/tree/command.py) 已经有：
+当前 [tree/command.py](../../tree/command.py) 已经有：
 
 - `command_status.json`
 - `stdout.log`
 - `stderr.log`
 - `cancel.request`
 - timeout / cancelled / missing output / invalid output
+- `activity.jsonl`
+- `timeout_diagnostic.json`
+- `env_redacted.json`
 
-缺口是诊断粒度还不够：
-
-- 不知道 command 是否真正启动。
-- 不知道是否发生 zero-call。
-- 不知道最后一次活动是 API call、tool call、probe request、stdout、stderr 还是 output write。
-- 不知道 provider / credential resolution 是否失败。
-- 不知道 timeout 前 probe 文件是什么状态。
-
-### 推荐形态
-
-给每个 command logs dir 增加：
-
-```text
-activity.jsonl
-timeout_diagnostic.json
-env_redacted.json
-```
+这些文件现在已经落地到每个 command logs dir。
 
 `activity.jsonl` 记录 framework 观察到的活动：
 
 ```json
 {"t": "...", "kind": "process_started", "pid": 123}
 {"t": "...", "kind": "probe_request_changed", "bytes": 192}
-{"t": "...", "kind": "probe_results_written", "count": 2}
+{"t": "...", "kind": "probe_results_written", "bytes": 640}
 {"t": "...", "kind": "stdout_changed", "bytes": 1024}
 {"t": "...", "kind": "stderr_changed", "bytes": 512}
 {"t": "...", "kind": "output_written", "bytes": 320}
@@ -405,17 +392,20 @@ env_redacted.json
   "action": "execute",
   "role": "executor",
   "status": "timed_out",
+  "failure_class": "probe_wait_loop",
   "duration_seconds": 600.0,
+  "timeout_seconds": 600.0,
   "started": true,
   "returncode": null,
+  "command": "python3 agent.py execute",
   "output_exists": false,
   "last_activity_kind": "probe_request_changed",
   "last_activity_age_seconds": 511.2,
   "stdout_tail": "...",
   "stderr_tail": "...",
+  "output_tail": "",
   "probe_request_tail": "...",
-  "probe_result_tail": "...",
-  "likely_failure_class": "provider_unreachable_or_no_model_call"
+  "probe_result_tail": "..."
 }
 ```
 
@@ -700,9 +690,12 @@ trajectory: branch tree + metrics + motifs
 
 这能把 Level 5 从“多个 kernel 拼起来”升级成“有 region、trace、reward、trajectory 的实验对象”。
 
-但当前不要过早把 AutoKernel single-kernel task 伪装成 full pipeline optimizer。正确顺序是：
+但当前不要把 AutoKernel single-kernel task 伪装成 full pipeline optimizer。
+`pipeline/bridge.py` 和 `pipeline/task.py` 已经提供 spec-driven generic
+pipeline workspace path；下一步仍然是补真实 profiler 和 trace schema。
+正确顺序是：
 
-1. 先让 pipeline task 有真实 profiler 和 trace schema。
+1. 先让现有 `PipelineTask` 接入真实 profiler 和 trace schema。
 2. 再让 planner 消费 pipeline bottleneck。
 3. 再释放 fusion、layout propagation、launch consolidation 这类跨 kernel family。
 

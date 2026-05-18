@@ -23,11 +23,15 @@
   - `README.md` 继续给人类
   - `docs/agent_entry.md` 和 `docs/agent_contract.md` 负责 framework-driven agent
 
-当前仍然没有变的边界也要保留清楚：
+当前仍然要保留清楚的边界：
 
-- bundled task 仍然是 AutoKernel-specific
-- `tree_optimize.py` 仍然是当前 shipped 的 AutoKernel CLI
-- pipeline task 和 pipeline evaluator 仍然没有作为默认实现进入仓库
+- `tree_optimize.py` 仍然是 AutoKernel extracted-kernel 的 CLI，实际编辑面仍是 sandbox-local `kernel.py`
+- `kernelbench/tree_run.py` 已经接入同一套 tree runtime，用于单个 KernelBench problem
+- `pipeline/bridge.py` 和 `pipeline/task.py` 已经接入 spec-driven generic pipeline workspace task
+- generic pipeline task 已经能跑 evaluator command、读取 metrics、promote workspace、提供 pipeline probes
+- 但它仍然不是 production pipeline profiler / trace analyzer / cross-kernel editor
+- Codex planner / executor / reflector 已经有 app-server session backend；`scripts/codex_tree_agent.py` 仍保留为 `codex exec` 兼容 wrapper
+- `tree/command.py` 已经负责命令启动、同 step probe 通讯、超时、取消、activity、失败诊断和预算记录
 
 ## 背景
 
@@ -900,16 +904,18 @@ kernel 优化并不是事后被树结构“包装”起来的任务。
 
 - `planner` 只冻结高层方向，不写代码。
 - `AutoKernelTask` 仍然是单-kernel harness，只编辑 sandbox-local `kernel.py`。
-- pipeline 风格 hints 已经可以进入 diagnosis，但 response family 仍然裁剪到 kernel-local family。
+- AutoKernel 路径里，pipeline 风格 hints 已经可以进入 diagnosis，但 response family 仍然裁剪到 kernel-local family。
+- PipelineTask 路径里，branch 可以是 pipeline-scope，但实际能力受 spec 的 workspace、editable paths 和 evaluator metrics 限制。
 - benchmark 在当前 harness 里只是局部 evaluator，不是未来通用 framework 的核心 prior。
 
 ## Pipeline Baseline 还缺什么
 
 这里只保留结论，不重复完整列表。
 
-当前判断不变：
+当前判断需要更新：
 
-- 新的 pipeline baseline 还缺真正的 pipeline profiler、pipeline task、scope router、pipeline evaluator / verifier
+- generic pipeline task 和 evaluator command 路径已经存在
+- 仍然缺的是生产级 pipeline profiler、trace schema、scope router、cross-kernel editor，以及更强的 pipeline verifier
 - 这些条件同时满足后，才能说 pipeline optimizer baseline 完成
 
 完整的缺口定义、完成条件、实验矩阵和阶段实验方案，统一以下面这些章节为权威版本：
@@ -1139,12 +1145,12 @@ archive、复杂剪枝、cost model、motif reuse 都可以放到 baseline 之�
 
 ## 当前最务实的下一步
 
-如果按“先把 baseline 做出来”这个目标推进，最直接的顺序还是：
+如果按“先把 baseline 做出来”这个目标推进，最直接的顺序应更新为：
 
 1. 做真正的 pipeline profiler 轻量字段输出
 2. 做 scope router
-3. 做独立的 pipeline task
-4. 接 pipeline evaluator / verifier
+3. 把现有 generic `PipelineTask` 接到真实 pipeline workspace / trace schema
+4. 增强 pipeline evaluator / verifier，而不是只依赖示例 metrics
 5. 再跑 Phase 1 和 Phase 2 实验
 
 这五步做完，新的 baseline 才算真正从单-kernel tree harness 走到 pipeline optimizer。

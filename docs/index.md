@@ -7,23 +7,20 @@ This repository now uses two doc lines:
 
 ## Human Docs
 
-- [README.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/README.md): human entrypoint
-- [docs/quickstart.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/quickstart.md): shortest practical smoke path
-- [docs/architecture.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/architecture.md): current layer model and file map
-- [docs/tree_adapter.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/tree_adapter.md): tree framework CLI, outputs, and command bridge
-- [docs/sensing.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/sensing.md): active sensing, probes, and result recording
-- [docs/verifier.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/verifier.md): thin verifier and current verdict model
+- [README.md](../README.md): human entrypoint
+- [docs/quickstart.md](quickstart.md): shortest practical smoke path
+- [docs/architecture.md](architecture.md): current layer model and file map
+- [docs/tree_adapter.md](tree_adapter.md): tree framework CLI, outputs, and command bridge
+- [docs/sensing.md](sensing.md): active sensing, probes, and result recording
+- [docs/verifier.md](verifier.md): thin verifier and current verdict model
+- [CONTRIBUTING.md](../CONTRIBUTING.md): local checks and contribution boundaries
+- [kernelbench/tree_run.py](../kernelbench/tree_run.py): KernelBench tree entrypoint
+- [pipeline/bridge.py](../pipeline/bridge.py): generic pipeline task entrypoint
 
 ## Agent Docs
 
-- [docs/agent_entry.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/agent_entry.md): runtime navigation entry for framework-driven agents
-- [docs/agent_contract.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/agent_contract.md): dense runtime contract for framework-driven agents
-- [program.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/program.md): long-running AutoKernel agent instructions
-- [kernelbench/program_kb.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/kernelbench/program_kb.md): KernelBench-specific runtime instructions
-
-## Design Background
-
-- [docs/tree_planner_consensus.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/tree_planner_consensus.md): current design consensus
-- [docs/planner_v1.md](/Users/nianzhen/.codex/worktrees/3fc8/autokernel/docs/planner_v1.md): planner background and earlier design framing
-- [docs/agentic_optimization_lessons.md](/Users/nianzhen/Desktop/autokernel/docs/agentic_optimization_lessons.md): external agent orchestration lessons mapped to the tree framework
-- [docs/run_interaction_metrics.md](/Users/nianzhen/Desktop/autokernel/docs/run_interaction_metrics.md): run viewer data semantics, metrics, and human interaction model
+- [docs/agent_entry.md](agent_entry.md): runtime navigation entry for framework-driven agents
+- [docs/agent_contract.md](agent_contract.md): dense runtime contract for framework-driven agents
+- [program.md](../program.md): long-running AutoKernel-compatible agent instructions
+- [kernelbench/program_kb.md](../kernelbench/program_kb.md): KernelBench-specific runtime instructions
+- [scripts/codex_tree_agent.py](../scripts/codex_tree_agent.py): Codex CLI executor wrapper for tree command contract

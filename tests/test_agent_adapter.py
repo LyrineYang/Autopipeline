@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import sys
 import tempfile
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from tree.agent import AgentStepError, CommandAgentAdapter
 from tree.prompts import build_execution_payload, build_execution_prompt
+from tree.sensing import SensingRuntime
 from tree.types import AgentRoleConfig, EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 from tree.planner import PlannerPacket
 
@@ -291,6 +293,195 @@ class CommandAgentAdapterTests(unittest.TestCase):
         logs_dir = Path(self.node.node_dir) / "agent" / "execute"
         self.assertTrue((logs_dir / "app_server_events.jsonl").exists())
         self.assertIn("turn_completed", (logs_dir / "activity.jsonl").read_text(encoding="utf-8"))
+
+    def test_codex_provider_defaults_to_app_server_without_command(self) -> None:
+        script = self._write_script(
+            "fake_default_app_server.py",
+            """
+            #!/usr/bin/env python3
+            import json
+            import sys
+
+            def send(message):
+                print(json.dumps(message), flush=True)
+
+            for line in sys.stdin:
+                message = json.loads(line)
+                method = message.get("method")
+                if method == "initialize":
+                    send({"id": message["id"], "result": {}})
+                elif method == "initialized":
+                    continue
+                elif method == "thread/start":
+                    send({"id": message["id"], "result": {"thread": {"id": "thread-default"}}})
+                    send({"method": "thread/started", "params": {"thread": {"id": "thread-default"}}})
+                elif method == "turn/start":
+                    send({"id": message["id"], "result": {"turn": {"id": "turn-default", "status": "inProgress"}}})
+                    send({"method": "turn/completed", "params": {"turn": {"id": "turn-default", "status": "completed"}}})
+                    break
+            """,
+        )
+        script.chmod(0o755)
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            role_configs={"executor": AgentRoleConfig(provider="codex")},
+        )
+
+        old_codex_bin = os.environ.get("CODEX_BIN")
+        os.environ["CODEX_BIN"] = str(script)
+        try:
+            execution = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+        finally:
+            if old_codex_bin is None:
+                os.environ.pop("CODEX_BIN", None)
+            else:
+                os.environ["CODEX_BIN"] = old_codex_bin
+
+        self.assertEqual(execution.metadata["backend"], "codex_app_server")
+        self.assertEqual(execution.metadata["thread_id"], "thread-default")
+
+    def test_app_server_resumes_existing_node_session(self) -> None:
+        script = self._write_script(
+            "fake_resume_app_server.py",
+            """
+            import json
+            import sys
+
+            def send(message):
+                print(json.dumps(message), flush=True)
+
+            for line in sys.stdin:
+                message = json.loads(line)
+                method = message.get("method")
+                if method == "initialize":
+                    send({"id": message["id"], "result": {}})
+                elif method == "initialized":
+                    continue
+                elif method == "thread/start":
+                    send({"id": message["id"], "result": {"thread": {"id": "thread-persist"}}})
+                    send({"method": "thread/started", "params": {"thread": {"id": "thread-persist"}}})
+                elif method == "thread/resume":
+                    send({"id": message["id"], "result": {"thread": {"id": message["params"]["threadId"]}}})
+                    send({"method": "thread/started", "params": {"thread": {"id": message["params"]["threadId"]}}})
+                elif method == "turn/start":
+                    send({"id": message["id"], "result": {"turn": {"id": "turn-ok", "status": "inProgress"}}})
+                    send({"method": "turn/completed", "params": {"turn": {"id": "turn-ok", "status": "completed"}}})
+                    break
+            """,
+        )
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            role_configs={
+                "executor": AgentRoleConfig(
+                    backend="codex-app-server",
+                    command=self._python_command(script),
+                )
+            },
+        )
+
+        first = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+        second = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        self.assertFalse(first.metadata["thread_resumed"])
+        self.assertTrue(second.metadata["thread_resumed"])
+        session_path = Path(second.metadata["session_path"])
+        self.assertEqual(json.loads(session_path.read_text(encoding="utf-8"))["thread_id"], "thread-persist")
+        requests = (Path(self.node.node_dir) / "agent" / "execute" / "app_server_requests.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"method": "thread/resume"', requests)
+
+    def test_app_server_dynamic_tool_runs_sensing_probe(self) -> None:
+        script = self._write_script(
+            "fake_dynamic_tool_app_server.py",
+            """
+            import json
+            import sys
+
+            saw_dynamic_tool = False
+
+            def send(message):
+                print(json.dumps(message), flush=True)
+
+            for line in sys.stdin:
+                message = json.loads(line)
+                method = message.get("method")
+                if method == "initialize":
+                    send({"id": message["id"], "result": {}})
+                elif method == "initialized":
+                    continue
+                elif method == "thread/start":
+                    saw_dynamic_tool = any(
+                        tool.get("name") == "run_sensing_probe"
+                        for tool in message["params"].get("dynamicTools", [])
+                    )
+                    send({"id": message["id"], "result": {"thread": {"id": "thread-tool"}}})
+                    send({"method": "thread/started", "params": {"thread": {"id": "thread-tool"}}})
+                elif method == "turn/start":
+                    send({"id": message["id"], "result": {"turn": {"id": "turn-tool", "status": "inProgress"}}})
+                    send({"method": "turn/started", "params": {"turn": {"id": "turn-tool", "status": "inProgress"}}})
+                    send({
+                        "id": 101,
+                        "method": "item/tool/call",
+                        "params": {
+                            "threadId": "thread-tool",
+                            "turnId": "turn-tool",
+                            "callId": "call-1",
+                            "tool": "run_sensing_probe",
+                            "arguments": {"kind": "read_text", "path": "kernel.py", "lines": 1},
+                        },
+                    })
+                elif message.get("id") == 101:
+                    result = message["result"]
+                    assert saw_dynamic_tool
+                    assert result["success"]
+                    assert "Read 1 lines" in result["contentItems"][0]["text"]
+                    send({"method": "item/completed", "params": {"item": {"id": "tool-1", "type": "dynamicToolCall", "tool": "run_sensing_probe", "status": "completed"}}})
+                    send({"method": "turn/completed", "params": {"turn": {"id": "turn-tool", "status": "completed"}}})
+                    break
+            """,
+        )
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            role_configs={
+                "executor": AgentRoleConfig(
+                    backend="codex-app-server",
+                    command=self._python_command(script),
+                )
+            },
+        )
+
+        execution = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        logs_dir = Path(self.node.node_dir) / "agent" / "execute"
+        probe_results = json.loads((logs_dir / "probe_results.json").read_text(encoding="utf-8"))
+        self.assertEqual(execution.metadata["dynamic_tool_call_count"], 1)
+        self.assertEqual(probe_results[0]["kind"], "read_text")
+        self.assertIn("dynamic_tool_request", (logs_dir / "activity.jsonl").read_text(encoding="utf-8"))
+
+    def test_sensing_does_not_duplicate_file_probes_after_dynamic_probe(self) -> None:
+        logs_dir = Path(self.node.node_dir) / "agent" / "execute"
+        sensing = SensingRuntime(
+            base_dir=Path(self.node.node_dir),
+            cwd=Path(self.node.sandbox_path),
+            task_snapshot=self.snapshot,
+            root=self.root,
+            parent=self.parent,
+            node=self.node,
+            task=self.task,
+        )
+        sensing.prepare("execute", logs_dir)
+        sensing.run_probe_request("execute", logs_dir, {"kind": "read_text", "path": "kernel.py", "lines": 1})
+
+        probe_requests_path = logs_dir / "probe_requests.json"
+        first_request = {"kind": "read_text", "path": "kernel.py", "lines": 1}
+        second_request = {"kind": "list_dir", "path": "."}
+        probe_requests_path.write_text(json.dumps([first_request]), encoding="utf-8")
+        sensing.serve_pending("execute", logs_dir)
+        probe_requests_path.write_text(json.dumps([first_request, second_request]), encoding="utf-8")
+        sensing.serve_pending("execute", logs_dir)
+
+        probe_results = json.loads((logs_dir / "probe_results.json").read_text(encoding="utf-8"))
+        self.assertEqual([result["source"] for result in probe_results], ["dynamic_tool", "probe_requests", "probe_requests"])
+        self.assertEqual([result["kind"] for result in probe_results], ["read_text", "read_text", "list_dir"])
 
     def test_execute_can_consume_probe_results_in_same_step(self) -> None:
         script = self._write_script(
@@ -594,6 +785,105 @@ class CommandAgentAdapterTests(unittest.TestCase):
         self.assertEqual(insight.summary, "reflect")
         self.assertEqual(insight.evidence, ["e1", "e2"])
 
+    def test_reflect_can_run_through_codex_app_server_backend(self) -> None:
+        script = self._write_script(
+            "reflector_app_server.py",
+            """
+            import json
+            import sys
+
+            def send(message):
+                print(json.dumps(message), flush=True)
+
+            reflection = {
+                "polarity": "positive",
+                "summary": "app-server reflection",
+                "evidence": ["score improved"],
+            }
+
+            for line in sys.stdin:
+                message = json.loads(line)
+                method = message.get("method")
+                if method == "initialize":
+                    send({"id": message["id"], "result": {}})
+                elif method == "initialized":
+                    continue
+                elif method == "thread/start":
+                    send({"id": message["id"], "result": {"thread": {"id": "thread-reflect"}}})
+                elif method == "turn/start":
+                    send({"id": message["id"], "result": {"turn": {"id": "turn-reflect", "status": "inProgress"}}})
+                    send({"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": json.dumps(reflection)}}})
+                    send({"method": "turn/completed", "params": {"turn": {"id": "turn-reflect", "status": "completed"}}})
+                    break
+            """,
+        )
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            role_configs={
+                "reflector": AgentRoleConfig(
+                    backend="codex-app-server",
+                    command=self._python_command(script),
+                )
+            },
+        )
+        self.node.evaluation_result = EvaluationResult(
+            accepted=True,
+            score=2.0,
+            metrics={"returncode": 0},
+            summary="candidate",
+        )
+
+        insight = adapter.reflect(self.task, self.snapshot, self.root, self.parent, self.node)
+
+        self.assertEqual(insight.polarity, "positive")
+        self.assertEqual(insight.summary, "app-server reflection")
+        self.assertEqual(insight.evidence, ["score improved"])
+        self.assertTrue((Path(self.node.node_dir) / "agent" / "reflector_codex_session.json").exists())
+
+    def test_failed_app_server_reflector_turn_raises(self) -> None:
+        script = self._write_script(
+            "reflector_failed_app_server.py",
+            """
+            import json
+            import sys
+
+            def send(message):
+                print(json.dumps(message), flush=True)
+
+            for line in sys.stdin:
+                message = json.loads(line)
+                method = message.get("method")
+                if method == "initialize":
+                    send({"id": message["id"], "result": {}})
+                elif method == "initialized":
+                    continue
+                elif method == "thread/start":
+                    send({"id": message["id"], "result": {"thread": {"id": "thread-reflect-failed"}}})
+                elif method == "turn/start":
+                    send({"id": message["id"], "result": {"turn": {"id": "turn-reflect-failed", "status": "inProgress"}}})
+                    send({"method": "turn/completed", "params": {"turn": {"id": "turn-reflect-failed", "status": "failed"}}})
+                    break
+            """,
+        )
+        adapter = CommandAgentAdapter(
+            self.repo_root,
+            role_configs={
+                "reflector": AgentRoleConfig(
+                    backend="codex-app-server",
+                    command=self._python_command(script),
+                )
+            },
+        )
+        self.node.evaluation_result = EvaluationResult(
+            accepted=True,
+            score=2.0,
+            metrics={"returncode": 0},
+            summary="candidate",
+        )
+
+        with self.assertRaisesRegex(AgentStepError, "turn ended with status failed"):
+            adapter.reflect(self.task, self.snapshot, self.root, self.parent, self.node)
+
     def test_execution_prompt_and_payload_include_planner_freeze(self) -> None:
         self.node.planner_context = {
             "recommended_scope": "kernel",
@@ -753,7 +1043,7 @@ class CommandAgentAdapterTests(unittest.TestCase):
 
     def _write_script(self, name: str, source: str) -> Path:
         path = self.repo_root / name
-        path.write_text(textwrap.dedent(source), encoding="utf-8")
+        path.write_text(textwrap.dedent(source).lstrip(), encoding="utf-8")
         return path
 
     def _python_command(self, script: Path) -> str:

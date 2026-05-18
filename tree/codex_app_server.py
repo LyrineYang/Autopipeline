@@ -12,15 +12,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .codex_dynamic_tools import run_dynamic_tool, sensing_dynamic_tools
+from .codex_session import (
+    is_codex_app_server_backend,
+    load_session,
+    persist_agent_session,
+    session_path_for,
+    should_use_codex_app_server,
+)
 from .types import AgentRoleConfig
-
-
-CODEX_APP_SERVER_BACKENDS = {"codex-app-server", "codex_app_server", "app-server", "app_server"}
-
-
-def is_codex_app_server_backend(role_config: AgentRoleConfig) -> bool:
-    values = {role_config.backend, role_config.provider}
-    return any(_normalize_backend(value) in CODEX_APP_SERVER_BACKENDS for value in values)
 
 
 def run_codex_app_server_executor(
@@ -35,9 +35,52 @@ def run_codex_app_server_executor(
     sensing=None,
     timeout_seconds: float | None = 600,
     budget_ledger: Any | None = None,
+    session_key: str | None = None,
+    session_registry_path: Path | None = None,
     error_cls: type[Exception] = RuntimeError,
 ) -> dict[str, Any]:
     """Run one executor step through `codex app-server` over stdio JSONL."""
+
+    return run_codex_app_server_role(
+        command,
+        cwd=cwd,
+        prompt=prompt,
+        payload=payload,
+        telemetry=telemetry,
+        logs_dir=logs_dir,
+        action="execute",
+        role="executor",
+        role_config=role_config,
+        sensing=sensing,
+        timeout_seconds=timeout_seconds,
+        budget_ledger=budget_ledger,
+        session_key=session_key,
+        session_registry_path=session_registry_path,
+        output_mode="execution_diff",
+        error_cls=error_cls,
+    )
+
+
+def run_codex_app_server_role(
+    command: str | None,
+    *,
+    cwd: Path,
+    prompt: str,
+    payload: dict[str, Any],
+    telemetry: dict[str, Any],
+    logs_dir: Path,
+    action: str,
+    role: str,
+    role_config: AgentRoleConfig,
+    sensing=None,
+    timeout_seconds: float | None = 600,
+    budget_ledger: Any | None = None,
+    session_key: str | None = None,
+    session_registry_path: Path | None = None,
+    output_mode: str = "json_message",
+    error_cls: type[Exception] = RuntimeError,
+) -> dict[str, Any]:
+    """Run one agent role through `codex app-server` over stdio JSONL."""
 
     logs_dir.mkdir(parents=True, exist_ok=True)
     effective_timeout = (
@@ -48,12 +91,14 @@ def run_codex_app_server_executor(
     prompt_path = logs_dir / "prompt.txt"
     payload_path = logs_dir / "payload.json"
     telemetry_path = logs_dir / "telemetry.json"
+    output_path = logs_dir / "output.json"
     status_path = logs_dir / "command_status.json"
     activity_path = logs_dir / "activity.jsonl"
     event_path = logs_dir / "app_server_events.jsonl"
     request_path = logs_dir / "app_server_requests.jsonl"
     stderr_path = logs_dir / "stderr.log"
     cancel_path = logs_dir / "cancel.request"
+    session_path = session_path_for(logs_dir, role=role)
 
     _write_text_atomic(prompt_path, prompt)
     _write_json_atomic(payload_path, payload)
@@ -62,8 +107,8 @@ def run_codex_app_server_executor(
         status_path,
         {
             "status": "running",
-            "action": "execute",
-            "role": "executor",
+            "action": action,
+            "role": role,
             "backend": "codex_app_server",
             "timeout_seconds": effective_timeout,
             "cancel_path": str(cancel_path),
@@ -72,17 +117,23 @@ def run_codex_app_server_executor(
 
     sensing_paths: dict[str, str] = {}
     if sensing is not None:
-        sensing_paths = sensing.prepare("execute", logs_dir)
+        sensing_paths = sensing.prepare(action, logs_dir)
 
     candidate_path = _candidate_path_from_payload(payload, cwd)
-    watched_paths = _watched_paths_from_payload(cwd, payload)
-    before = _workspace_fingerprint(cwd, watched_paths=watched_paths)
+    watched_paths = _watched_paths_from_payload(cwd, payload) if output_mode == "execution_diff" else None
+    before = (
+        _workspace_fingerprint(cwd, watched_paths=watched_paths)
+        if output_mode == "execution_diff"
+        else {}
+    )
     app_command = _build_app_server_command(command)
     state = _AppServerState()
     started_at = time.monotonic()
     timed_out = False
     cancelled = False
     failed_error: Exception | None = None
+    stored_session = load_session(session_path)
+    resume_thread_id = str(stored_session.get("thread_id") or "")
 
     _record_activity(activity_path, "app_server_process_starting", {"command": _redact_command(app_command)})
     with stderr_path.open("w", encoding="utf-8") as stderr_handle:
@@ -118,11 +169,22 @@ def run_codex_app_server_executor(
                 cancel_path=cancel_path,
                 sensing=sensing,
                 logs_dir=logs_dir,
+                action=action,
             )
             _send(process, request_path, {"method": "initialized", "params": {}})
 
-            thread_params = _thread_params(cwd=cwd, role_config=role_config)
-            _send(process, request_path, {"method": "thread/start", "id": 2, "params": thread_params})
+            if resume_thread_id:
+                state.thread_resumed = True
+                thread_method = "thread/resume"
+                thread_params = _resume_params(
+                    thread_id=resume_thread_id,
+                    cwd=cwd,
+                    role_config=role_config,
+                )
+            else:
+                thread_method = "thread/start"
+                thread_params = _thread_params(cwd=cwd, role_config=role_config, sensing=sensing)
+            _send(process, request_path, {"method": thread_method, "id": 2, "params": thread_params})
             thread_response = _wait_for_response(
                 process,
                 messages,
@@ -135,6 +197,7 @@ def run_codex_app_server_executor(
                 cancel_path=cancel_path,
                 sensing=sensing,
                 logs_dir=logs_dir,
+                action=action,
             )
             state.thread_id = _thread_id_from_response(thread_response)
             if not state.thread_id:
@@ -148,7 +211,20 @@ def run_codex_app_server_executor(
                     "id": 3,
                     "params": {
                         "threadId": state.thread_id,
-                        "input": [{"type": "text", "text": _turn_prompt(prompt, payload, telemetry, sensing_paths)}],
+                        "input": [
+                            {
+                                "type": "text",
+                                "text": _turn_prompt(
+                                    prompt,
+                                    payload,
+                                    telemetry,
+                                    sensing_paths,
+                                    action=action,
+                                    role=role,
+                                    output_mode=output_mode,
+                                ),
+                            }
+                        ],
                         "cwd": str(cwd),
                         "sandbox": "workspaceWrite",
                         "approvalPolicy": "never",
@@ -166,6 +242,7 @@ def run_codex_app_server_executor(
                 cancel_path=cancel_path,
                 sensing=sensing,
                 logs_dir=logs_dir,
+                action=action,
             )
         except _Cancelled:
             cancelled = True
@@ -177,11 +254,15 @@ def run_codex_app_server_executor(
             failed_error = exc
         finally:
             if sensing is not None:
-                sensing.finalize("execute", logs_dir)
+                sensing.finalize(action, logs_dir)
             _shutdown_process(process)
 
     duration_seconds = round(time.monotonic() - started_at, 3)
-    after = _workspace_fingerprint(cwd, watched_paths=watched_paths)
+    after = (
+        _workspace_fingerprint(cwd, watched_paths=watched_paths)
+        if output_mode == "execution_diff"
+        else {}
+    )
     changed_paths = sorted(path for path, digest in after.items() if before.get(path) != digest)
     deleted_paths = sorted(path for path in before if path not in after)
     changed = bool(changed_paths or deleted_paths)
@@ -194,31 +275,54 @@ def run_codex_app_server_executor(
         if failed_error is not None
         else _result_status(state)
     )
-    output = {
+    metadata = {
+        "backend": "codex_app_server",
+        "thread_id": state.thread_id,
+        "turn_id": state.turn_id,
+        "turn_status": state.turn_status,
+        "thread_resumed": state.thread_resumed,
+        "changed_paths": changed_paths[:20],
+        "deleted_paths": deleted_paths[:20],
+        "event_count": state.event_count,
+        "command_count": len(state.commands),
+        "file_change_count": len(state.file_changes),
+        "dynamic_tool_call_count": state.dynamic_tool_calls,
+        "latest_diff_bytes": len(state.latest_diff),
+        "token_usage": state.token_usage,
+        "session_path": str(session_path),
+        "session_registry_path": str(session_registry_path) if session_registry_path else "",
+        "events_path": str(event_path),
+        "requests_path": str(request_path),
+    }
+    output: dict[str, Any] = {
         "status": status,
         "summary": _summary(state, changed),
         "changed": changed,
         "candidate_path": str(candidate_path),
-        "metadata": {
-            "backend": "codex_app_server",
-            "thread_id": state.thread_id,
-            "turn_id": state.turn_id,
-            "turn_status": state.turn_status,
-            "changed_paths": changed_paths[:20],
-            "deleted_paths": deleted_paths[:20],
-            "event_count": state.event_count,
-            "command_count": len(state.commands),
-            "file_change_count": len(state.file_changes),
-            "latest_diff_bytes": len(state.latest_diff),
-            "token_usage": state.token_usage,
-            "events_path": str(event_path),
-            "requests_path": str(request_path),
-        },
+        "metadata": metadata,
     }
+    parse_error: Exception | None = None
+    if output_mode == "json_message" and status == "completed":
+        try:
+            output = _json_output_from_messages(state.agent_messages)
+            if not isinstance(output, dict):
+                raise ValueError("Codex app-server role output must be a JSON object.")
+            output_metadata = output.get("metadata")
+            if not isinstance(output_metadata, dict):
+                output_metadata = {}
+            output["metadata"] = {**output_metadata, "app_server": metadata}
+        except Exception as exc:
+            parse_error = exc
+            status = "invalid_output"
+            output = {
+                "status": status,
+                "summary": str(exc),
+                "metadata": metadata,
+            }
     status_payload = {
         "status": status,
-        "action": "execute",
-        "role": "executor",
+        "action": action,
+        "role": role,
         "backend": "codex_app_server",
         "duration_seconds": duration_seconds,
         "timeout_seconds": effective_timeout,
@@ -227,15 +331,50 @@ def run_codex_app_server_executor(
         "returncode": None,
         "thread_id": state.thread_id,
         "turn_id": state.turn_id,
+        "thread_resumed": state.thread_resumed,
     }
+    turn_failed = (
+        output_mode == "json_message"
+        and status != "completed"
+        and parse_error is None
+        and not timed_out
+        and not cancelled
+        and failed_error is None
+    )
+    if parse_error is not None:
+        status_payload["failure_class"] = "invalid_output"
+    if turn_failed:
+        status_payload["failure_class"] = "codex_app_server_turn_failed"
+    _write_json_atomic(output_path, output)
     _write_json_atomic(status_path, status_payload)
+    persist_agent_session(
+        session_path=session_path,
+        registry_path=session_registry_path,
+        existing_session=stored_session,
+        session_key=session_key,
+        role=role,
+        status=status,
+        thread_id=state.thread_id,
+        turn_id=state.turn_id,
+        turn_status=state.turn_status,
+        thread_resumed=state.thread_resumed,
+        cwd=cwd,
+        logs_dir=logs_dir,
+        event_count=state.event_count,
+        dynamic_tool_call_count=state.dynamic_tool_calls,
+        token_usage=state.token_usage,
+    )
     _record_budget_command(budget_ledger, status_payload, output)
     if timed_out:
-        raise error_cls(f"Codex app-server executor timed out after {effective_timeout} seconds.")
+        raise error_cls(f"Codex app-server {role} timed out after {effective_timeout} seconds.")
     if cancelled:
-        raise error_cls(f"Codex app-server executor was cancelled via {cancel_path}.")
+        raise error_cls(f"Codex app-server {role} was cancelled via {cancel_path}.")
     if failed_error is not None:
-        raise error_cls(f"Codex app-server executor failed: {failed_error}") from failed_error
+        raise error_cls(f"Codex app-server {role} failed: {failed_error}") from failed_error
+    if parse_error is not None:
+        raise error_cls(f"Codex app-server {role} returned invalid JSON: {parse_error}") from parse_error
+    if turn_failed:
+        raise error_cls(f"Codex app-server {role} turn ended with status {state.turn_status or status}.")
     return output
 
 
@@ -252,11 +391,13 @@ class _AppServerState:
         self.thread_id: str = ""
         self.turn_id: str = ""
         self.turn_status: str = ""
+        self.thread_resumed = False
         self.latest_diff: str = ""
         self.token_usage: dict[str, Any] = {}
         self.agent_messages: list[str] = []
         self.commands: list[dict[str, Any]] = []
         self.file_changes: list[dict[str, Any]] = []
+        self.dynamic_tool_calls = 0
         self.event_count = 0
 
 
@@ -273,9 +414,10 @@ def _wait_for_response(
     cancel_path: Path,
     sensing,
     logs_dir: Path,
+    action: str,
 ) -> dict[str, Any]:
     while True:
-        message = _next_message(process, messages, deadline, cancel_path, sensing, logs_dir)
+        message = _next_message(process, messages, deadline, cancel_path, sensing, logs_dir, action)
         if message is None:
             raise RuntimeError("Codex app-server exited before responding.")
         _record_raw(event_path, message)
@@ -283,7 +425,7 @@ def _wait_for_response(
             if message.get("error"):
                 raise RuntimeError(f"Codex app-server request {request_id} failed: {message['error']}")
             return message
-        _handle_message(process, message, state, event_path, activity_path, request_path)
+        _handle_message(process, message, state, event_path, activity_path, request_path, sensing, logs_dir, action)
 
 
 def _wait_for_turn_completion(
@@ -298,13 +440,14 @@ def _wait_for_turn_completion(
     cancel_path: Path,
     sensing,
     logs_dir: Path,
+    action: str,
 ) -> None:
     while True:
-        message = _next_message(process, messages, deadline, cancel_path, sensing, logs_dir)
+        message = _next_message(process, messages, deadline, cancel_path, sensing, logs_dir, action)
         if message is None:
             raise RuntimeError("Codex app-server exited before turn completion.")
         _record_raw(event_path, message)
-        _handle_message(process, message, state, event_path, activity_path, request_path)
+        _handle_message(process, message, state, event_path, activity_path, request_path, sensing, logs_dir, action)
         if message.get("method") == "turn/completed":
             return
 
@@ -316,6 +459,7 @@ def _next_message(
     cancel_path: Path,
     sensing,
     logs_dir: Path,
+    action: str,
 ) -> dict[str, Any] | None:
     while True:
         if cancel_path.exists():
@@ -323,7 +467,7 @@ def _next_message(
         if deadline is not None and time.monotonic() > deadline:
             raise _TimedOut()
         if sensing is not None:
-            sensing.serve_pending("execute", logs_dir)
+            sensing.serve_pending(action, logs_dir)
         timeout = 0.05 if deadline is None else max(0.01, min(0.05, deadline - time.monotonic()))
         try:
             line = messages.get(timeout=timeout)
@@ -351,6 +495,9 @@ def _handle_message(
     event_path: Path,
     activity_path: Path,
     request_path: Path,
+    sensing,
+    logs_dir: Path,
+    action: str,
 ) -> None:
     method = str(message.get("method") or "")
     if method:
@@ -388,6 +535,8 @@ def _handle_message(
             "turn_completed",
             {"thread_id": state.thread_id, "turn_id": state.turn_id, "status": state.turn_status},
         )
+    elif method == "item/tool/call" and message.get("id") is not None:
+        _handle_dynamic_tool_call(process, message, state, activity_path, request_path, sensing, logs_dir, action)
     elif message.get("id") is not None and method:
         _record_activity(activity_path, "unsupported_server_request", {"method": method})
         _send(
@@ -409,7 +558,7 @@ def _handle_completed_item(message: dict[str, Any], state: _AppServerState, acti
         return
     item_type = str(item.get("type") or "")
     if item_type == "agentMessage":
-        text = item.get("text")
+        text = item.get("text") or _content_text(item)
         if text:
             state.agent_messages.append(str(text))
         _record_activity(activity_path, "agent_message_completed", {"bytes": len(str(text or ""))})
@@ -428,7 +577,41 @@ def _handle_completed_item(message: dict[str, Any], state: _AppServerState, acti
         state.file_changes.append(item)
         _record_activity(activity_path, "file_change_completed", {"status": item.get("status")})
     elif item_type == "dynamicToolCall":
+        state.dynamic_tool_calls += 1
         _record_activity(activity_path, "dynamic_tool_completed", {"tool": item.get("tool"), "status": item.get("status")})
+
+
+def _handle_dynamic_tool_call(
+    process: subprocess.Popen[str],
+    message: dict[str, Any],
+    state: _AppServerState,
+    activity_path: Path,
+    request_path: Path,
+    sensing,
+    logs_dir: Path,
+    action: str,
+) -> None:
+    params = message.get("params")
+    params = params if isinstance(params, dict) else {}
+    result, activity = run_dynamic_tool(params, sensing=sensing, logs_dir=logs_dir, action=action)
+    _record_activity(activity_path, "dynamic_tool_request", activity)
+    _send(process, request_path, {"id": message["id"], "result": result})
+
+
+def _content_text(item: dict[str, Any]) -> str:
+    content_items = item.get("contentItems")
+    if content_items is None:
+        content_items = item.get("content")
+    if not isinstance(content_items, list):
+        return ""
+    parts: list[str] = []
+    for content in content_items:
+        if not isinstance(content, dict):
+            continue
+        text = content.get("text") or content.get("content")
+        if text:
+            parts.append(str(text))
+    return "\n".join(parts)
 
 
 def _send(process: subprocess.Popen[str], request_path: Path, message: dict[str, Any]) -> None:
@@ -505,15 +688,24 @@ def _initialize_params() -> dict[str, Any]:
     }
 
 
-def _thread_params(*, cwd: Path, role_config: AgentRoleConfig) -> dict[str, Any]:
+def _thread_params(*, cwd: Path, role_config: AgentRoleConfig, sensing) -> dict[str, Any]:
     params: dict[str, Any] = {
         "cwd": str(cwd),
         "approvalPolicy": "never",
         "sandbox": "workspaceWrite",
-        "serviceName": "autokernel_tree_executor",
+        "serviceName": "autokernel_tree_agent",
     }
     if role_config.model:
         params["model"] = role_config.model
+    dynamic_tools = sensing_dynamic_tools(sensing)
+    if dynamic_tools:
+        params["dynamicTools"] = dynamic_tools
+    return params
+
+
+def _resume_params(*, thread_id: str, cwd: Path, role_config: AgentRoleConfig) -> dict[str, Any]:
+    params = _thread_params(cwd=cwd, role_config=role_config, sensing=None)
+    params["threadId"] = thread_id
     return params
 
 
@@ -522,13 +714,29 @@ def _turn_prompt(
     payload: dict[str, Any],
     telemetry: dict[str, Any],
     sensing_paths: dict[str, str],
+    *,
+    action: str,
+    role: str,
+    output_mode: str,
 ) -> str:
-    return (
-        "You are the executor for one tree-search branch.\n\n"
-        "Work only inside the current sandbox. Make one focused code change if it is likely "
-        "to improve the candidate. Do not edit benchmark control files unless the payload "
-        "explicitly allows it. Do not write framework result JSON; the runtime will summarize "
-        "your file changes after the turn.\n\n"
+    if output_mode == "json_message":
+        role_guidance = (
+            f"You are the {role} for one tree-search {action} step.\n\n"
+            "Return exactly one JSON object in your final message. Do not wrap it in markdown. "
+            "Do not write TREE_OUTPUT_PATH even if the embedded prompt mentions it; this "
+            "app-server runtime captures your final JSON message directly. Do not edit files "
+            "unless the embedded task explicitly asks for a code change.\n\n"
+        )
+    else:
+        role_guidance = (
+            "You are the executor for one tree-search branch.\n\n"
+            "Work only inside the current sandbox. Make one focused code change if it is likely "
+            "to improve the candidate. Do not edit benchmark control files unless the payload "
+            "explicitly allows it. Do not write framework result JSON; the runtime will summarize "
+            "your file changes after the turn. When more evidence is needed, call run_sensing_probe "
+            "instead of editing the probe request file manually.\n\n"
+        )
+    return role_guidance + (
         f"TREE_PROMPT:\n{prompt}\n\n"
         f"TREE_PAYLOAD_JSON:\n```json\n{json.dumps(payload, indent=2)}\n```\n\n"
         f"TREE_TELEMETRY_JSON:\n```json\n{json.dumps(telemetry, indent=2)}\n```\n\n"
@@ -564,6 +772,34 @@ def _summary(state: _AppServerState, changed: bool) -> str:
     if changed:
         return f"Codex app-server turn {status} with sandbox changes."
     return f"Codex app-server turn {status} without modifying watched sandbox files."
+
+
+def _json_output_from_messages(messages: list[str]) -> dict[str, Any]:
+    for message in reversed(messages):
+        candidate = _strip_json_message(message)
+        if not candidate:
+            continue
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("No JSON object found in the final app-server agent messages.")
+
+
+def _strip_json_message(text: str) -> str:
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        candidate = "\n".join(lines).strip()
+    if candidate.lower().startswith("json\n"):
+        candidate = candidate[5:].strip()
+    return candidate
 
 
 def _candidate_path_from_payload(payload: dict[str, Any], cwd: Path) -> Path:
@@ -642,11 +878,11 @@ def _record_budget_command(
     if not callable(recorder):
         return
     recorder(
-        action="execute",
+        action=str(status_payload.get("action", "agent")),
         status=str(status_payload.get("status", "unknown")),
         duration_seconds=float(status_payload.get("duration_seconds") or 0.0),
         output=output,
-        role="executor",
+        role=str(status_payload.get("role") or status_payload.get("action") or "agent"),
         failure_class="" if status_payload.get("status") == "completed" else "codex_app_server",
     )
 
@@ -682,10 +918,6 @@ def _dig(value: Any, *keys: str) -> Any:
             return None
         current = current.get(key)
     return current
-
-
-def _normalize_backend(value: str | None) -> str:
-    return str(value or "").strip().lower().replace("_", "-")
 
 
 def _redact_command(command: list[str]) -> str:

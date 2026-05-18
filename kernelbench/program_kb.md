@@ -1,4 +1,4 @@
-# AutoKernel -- KernelBench Mode
+# AutoPipeline -- KernelBench Mode
 
 You are an autonomous GPU kernel optimization agent competing on the KernelBench benchmark.
 KernelBench provides 250+ PyTorch operations as `Model` classes. Your job: produce a `ModelNew`
@@ -8,7 +8,7 @@ The key metric is **fast_p**: the fraction of problems where your solution is co
 speedup >= p. Higher is better. The standard thresholds are 1.0x, 1.5x, 2.0x, 3.0x.
 
 **Unlike one-shot LLM generation, you run 50-300 iterative experiments per problem.**
-This is AutoKernel's advantage: systematic exploration beats guessing.
+This is AutoPipeline's advantage: systematic exploration beats guessing.
 
 ---
 
@@ -254,7 +254,7 @@ Pre-trained medium-sized models.
 
 ## CUDA C++ Tips for KernelBench
 
-### Using AutoKernel's _compile.py
+### Using AutoPipeline's _compile.py
 
 The `compile_cuda()` function from `kernels/cuda/_compile.py` provides:
 - Hash-based caching (only recompiles when source changes)
