@@ -28,6 +28,7 @@ uv.lock
 
 # Analysis output (regenerated)
 report.md
+progress.png
 
 # Profiler traces
 traces/

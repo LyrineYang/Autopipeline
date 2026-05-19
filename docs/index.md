@@ -1,21 +1,21 @@
 # Docs Index
 
-This repository now uses two doc lines:
+This repository uses two public doc lines:
 
-- human docs: what the project is, what works, how to run it, how to inspect outputs
-- agent docs: a navigation entry plus a dense runtime contract for planner / executor / reflector
+- human docs: what the project is, how to run the `autopipeline` CLI, and how
+  to inspect outputs
+- agent docs: a navigation entry plus a dense runtime contract for planner /
+  executor / reflector
 
 ## Human Docs
 
 - [README.md](../README.md): human entrypoint
-- [docs/quickstart.md](quickstart.md): shortest practical smoke path
+- [docs/quickstart.md](quickstart.md): shortest practical CLI path
 - [docs/architecture.md](architecture.md): current layer model and file map
-- [docs/tree_adapter.md](tree_adapter.md): tree framework CLI, outputs, and command bridge
+- [docs/tree_adapter.md](tree_adapter.md): tree runtime outputs and command bridge
 - [docs/sensing.md](sensing.md): active sensing, probes, and result recording
 - [docs/verifier.md](verifier.md): thin verifier and current verdict model
 - [CONTRIBUTING.md](../CONTRIBUTING.md): local checks and contribution boundaries
-- [kernelbench/tree_run.py](../kernelbench/tree_run.py): KernelBench tree entrypoint
-- [pipeline/bridge.py](../pipeline/bridge.py): generic pipeline task entrypoint
 
 ## Agent Docs
 

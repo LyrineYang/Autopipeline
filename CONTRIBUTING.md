@@ -10,16 +10,21 @@ Run these before opening a pull request:
 
 ```bash
 python3 -m unittest discover -s tests
+python3 -m py_compile autopipeline/*.py tree/*.py kernelbench/*.py pipeline/*.py kernels/*.py kernels/cuda/*.py models/*.py scripts/*.py tests/*.py *.py
+python3 -m autopipeline --help
+python3 -m autopipeline doctor --no-gpu
 git diff --check
+python3 -m pip wheel . --no-deps --no-build-isolation -w /private/tmp/autopipeline-wheel
 ```
 
 GPU-dependent smoke tests are useful when you have a CUDA machine:
 
 ```bash
-uv run prepare.py
-uv run profile.py --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
-uv run extract.py --top 1
-uv run tree_optimize.py --kernel-file workspace/kernel_matmul_1.py --run-name smoke-tree --beam-width 1 --max-rounds 1 --children-per-expansion 1 --bench-arg=--quick
+uv run autopipeline doctor
+uv run autopipeline prepare
+uv run autopipeline profile --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
+uv run autopipeline extract --top 1
+uv run autopipeline tree run --kernel-file workspace/kernel_matmul_1.py --run-name smoke-tree --beam-width 1 --max-rounds 1 --children-per-expansion 1 --bench-arg=--quick
 ```
 
 ## Boundaries
@@ -28,6 +33,9 @@ uv run tree_optimize.py --kernel-file workspace/kernel_matmul_1.py --run-name sm
   separate when possible.
 - Keep the tree core task-agnostic; task-specific behavior belongs in task
   adapters or task-specific probes.
+- Keep new user-facing commands behind the `autopipeline` CLI. Existing
+  top-level scripts are compatibility entrypoints, not the preferred public
+  interface.
 - Preserve both sensing paths: app-server dynamic tools and the legacy
   `probe_requests.json` file flow should call the same probe handlers.
 - Codex roles should use app-server sessions by default. The JSON command bridge

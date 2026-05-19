@@ -1,6 +1,8 @@
 # Tree Adapter
 
-This page explains the current tree-search runtime and the shipped CLI paths.
+This page explains the current tree-search runtime. Use `autopipeline tree run`
+for the public AutoKernel-compatible task path; direct adapter scripts are
+advanced compatibility entrypoints.
 
 The framework core is task-agnostic. The AutoKernel-compatible CLI still optimizes one
 extracted kernel at a time, but the same tree engine now also backs KernelBench
@@ -20,12 +22,12 @@ Its current split is:
 - `BudgetLedger` records agent, probe, timeout, and family-level signals
 - `RunArchive` writes motif summaries and a planner prior for later rounds
 
-## CLI Paths
+## CLI Path
 
 AutoKernel-compatible extracted-kernel example:
 
 ```bash
-uv run tree_optimize.py \
+uv run autopipeline tree run \
   --kernel-file workspace/kernel_matmul_1.py \
   --run-name matmul-tree \
   --beam-width 2 \
@@ -33,6 +35,8 @@ uv run tree_optimize.py \
   --children-per-expansion 2 \
   --bench-arg=--quick
 ```
+
+Advanced adapter entrypoints remain available for local experiments:
 
 KernelBench example:
 
@@ -93,7 +97,7 @@ The adapter has two role backends:
 For Codex, prefer provider-based role config:
 
 ```bash
-uv run tree_optimize.py \
+uv run autopipeline tree run \
   --kernel-file workspace/kernel_matmul_1.py \
   --run-name codex-session-smoke \
   --beam-width 1 \
@@ -199,7 +203,7 @@ The tree run writes:
 You can build the first human-facing run view after a run finishes:
 
 ```bash
-python3 scripts/tree_report.py <run-dir>
+uv run autopipeline report <run-dir>
 ```
 
 This writes:

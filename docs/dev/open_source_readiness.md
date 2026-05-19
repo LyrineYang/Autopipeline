@@ -33,8 +33,9 @@ public quickstart path.
 - Package metadata is aligned with the latest changelog release, `1.3.0`.
   Confirm the next public release tag only when this work is ready to announce.
 - Built wheels include library packages (`tree`, `kernelbench`, `pipeline`,
-  `kernels`, and `models`). The command-line workflow is still source-checkout
-  oriented through `uv run <script>.py`.
+  `kernels`, and `models`) plus the `autopipeline` CLI. The command-line
+  workflow is still source-checkout oriented; historical top-level scripts
+  remain compatibility entrypoints.
 - Confirm the public package name and PyPI strategy before uploading wheels.
 - Do not publish to PyPI until the import namespace is finalized. The current
   wheel still exposes legacy top-level modules such as `tree`, which is fine for
@@ -48,7 +49,10 @@ public quickstart path.
 
   ```bash
   python3 -m unittest discover -s tests
-  python3 -m py_compile tree/*.py kernelbench/*.py pipeline/*.py kernels/*.py kernels/cuda/*.py models/*.py scripts/*.py tests/*.py
+  python3 -m py_compile autopipeline/*.py tree/*.py kernelbench/*.py pipeline/*.py kernels/*.py kernels/cuda/*.py models/*.py scripts/*.py tests/*.py *.py
+  python3 -m autopipeline --help
+  python3 -m autopipeline doctor --no-gpu
+  python3 -m autopipeline tree --help
   git diff --check HEAD~1..HEAD
   python3 -m pip wheel . --no-deps --no-build-isolation -w /private/tmp/autopipeline-wheel-final
   ```
@@ -96,7 +100,10 @@ public quickstart path.
   ## Validation
 
   - python3 -m unittest discover -s tests
-  - python3 -m py_compile tree/*.py kernelbench/*.py pipeline/*.py kernels/*.py kernels/cuda/*.py models/*.py scripts/*.py tests/*.py
+  - python3 -m py_compile autopipeline/*.py tree/*.py kernelbench/*.py pipeline/*.py kernels/*.py kernels/cuda/*.py models/*.py scripts/*.py tests/*.py *.py
+  - python3 -m autopipeline --help
+  - python3 -m autopipeline doctor --no-gpu
+  - python3 -m autopipeline tree --help
   - git diff --check HEAD~1..HEAD
   - python3 -m pip wheel . --no-deps --no-build-isolation -w /private/tmp/autopipeline-wheel-final
   ```

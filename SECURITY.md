@@ -25,6 +25,11 @@ Include:
 ## Local Safety Notes
 
 - Do not run untrusted agent commands with access to secrets.
+- Treat `--planner-command`, `--executor-command`, `--reflector-command`,
+  command probes, and python probes as trusted-code execution.
+- For lower-risk runs, avoid external role commands and set
+  `--max-probe-calls 0` on `autopipeline tree run` when active sensing is not
+  needed.
 - Review generated kernels and scripts before publishing them.
 - Keep `workspace/`, logs, profiler traces, and agent outputs out of commits.
 - The Codex app-server backend records event and request logs; inspect logs

@@ -4,17 +4,16 @@ This page explains the current layer model in plain language.
 
 ## Current Shape
 
-The repository has four practical paths:
+The repository has one preferred user entrypoint:
 
-- the original AutoKernel-compatible long-loop path
-- the AutoKernel-compatible tree CLI
-- the KernelBench tree adapter
-- the generic pipeline bridge
+- `autopipeline`, which wraps setup, profiling, extraction, tree search, run
+  reports, benchmarking, and verification
 
-The tree framework is the shared runtime for planner, sensing, verifier,
-branch-local execution, budget tracking, archive reuse, and run viewing.
-The AutoKernel-compatible tree CLI is still single-kernel at its task surface,
-but the framework is no longer only an AutoKernel single-file adapter.
+Under that CLI, the tree framework is the shared runtime for planner, sensing,
+verifier, branch-local execution, budget tracking, archive reuse, and run
+viewing. The default task surface is still AutoKernel-compatible single-kernel
+optimization, while KernelBench and generic pipeline adapters plug into the
+same runtime.
 
 ## Tree Framework Layers
 
@@ -205,7 +204,8 @@ Today the tree framework core is:
 
 Today the shipped task surfaces are:
 
-- AutoKernel-compatible extracted-kernel optimization through [tree_optimize.py](../tree_optimize.py)
+- AutoKernel-compatible extracted-kernel optimization through
+  `autopipeline tree run`
 - KernelBench problem optimization through [kernelbench/tree_run.py](../kernelbench/tree_run.py)
 - generic pipeline workspace optimization through [pipeline/bridge.py](../pipeline/bridge.py)
 

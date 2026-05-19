@@ -1,104 +1,57 @@
 # AutoPipeline
 
-AutoPipeline is an agent-first pipeline and GPU kernel optimization workspace
-built from the AutoKernel codebase.
+AutoPipeline is an agent-first GPU kernel and pipeline optimization workspace
+built from the AutoKernel implementation base. It is now an independent
+personal project hosted at `LyrineYang/Autopipeline`.
 
-It currently has several usable paths:
-
-- the original long-running single-agent loop for extracted kernels
-- an experimental tree framework for controlled branch-based search
-- a KernelBench tree adapter
-- a generic pipeline workspace bridge
-
-The repository started from AutoKernel's kernel optimizer. It is now an
-independent project focused on a general framework for pipeline
-co-optimization. The framework core is already task-agnostic; AutoKernel-style
-single-kernel tasks, KernelBench, and generic pipeline tasks now plug into the
-same tree runtime.
-
-The current agent runtime is session-oriented. Codex roles default to the
-Codex app-server backend, which gives each role a resumable thread, event logs,
-turn status, token usage, and optional dynamic sensing tools. The older JSON
-command bridge remains available for local scripts and non-Codex agents.
-
-## Lineage
-
-AutoPipeline is an independent project built from the AutoKernel implementation
-base. The AutoKernel-compatible path remains available for extracted
-single-kernel work, while the new tree runtime, sensing layer, KernelBench
-adapter, and pipeline bridge move the project toward broader pipeline
-co-optimization.
+The default user entrypoint is the `autopipeline` CLI. Historical top-level
+scripts still work for compatibility, but new workflows should use the CLI so
+the public path stays stable.
 
 ## Status
 
-- stable enough to use: the original AutoKernel-compatible loop
-- experimental but usable: the tree framework core
-- experimental: KernelBench and generic pipeline tree task surfaces
-- still in progress: production pipeline profiler / trace schema / cross-kernel editor
+- stable enough to use: AutoKernel-compatible profile / extract / benchmark flow
+- experimental but usable: tree search for controlled branch-based optimization
+- experimental: KernelBench and generic pipeline task adapters
+- not yet public package distribution: use the source checkout; do not publish
+  this wheel to PyPI until the import namespace is finalized
 
-## What You Can Use Today
-
-### Main Path
-
-The default path is still the original AutoKernel-compatible loop:
-
-1. profile a PyTorch model
-2. extract hot kernels
-3. optimize one kernel at a time with a fixed benchmark loop
-4. verify end-to-end correctness
-
-This path is driven by [program.md](program.md).
-
-### Tree path
-
-The tree framework is a separate path for short, isolated search:
-
-- `planner` freezes high-level branch identity
-- `TreeSearchEngine` manages expansion, pruning, and state
-- `BranchEngine` runs a short branch-local keep/revert loop
-- `SensingRuntime` runs diagnostic probes and records results
-- the thin verifier compresses current evidence into `keep | reject | need_more_evidence`
-
-Current tree scope:
-
-- the framework core is task-agnostic
-- AutoKernel-compatible tree mode still edits one extracted kernel at a time
-- KernelBench and generic pipeline task surfaces are available
-- external planner / executor / reflector commands are optional
-- active sensing, generic command/python probes, and `theoretical_limit_inputs` are available
-- Codex planner / executor / reflector roles can run through app-server sessions
-- command timeout, cancellation, activity logs, diagnostics, budgets, and archive summaries are available
-- good for search experiments and framework development
-- not yet a production pipeline optimizer
-
-## Human Quick Start
+## Quick Start
 
 Requirements:
 
-- NVIDIA GPU for the main optimization path
 - Python 3.10+
 - [`uv`](https://docs.astral.sh/uv/)
+- NVIDIA GPU for the main optimization path
 
-Setup:
+Set up the source checkout:
 
 ```bash
 uv python install $(cat .python-version)
 uv venv --python $(cat .python-version)
 uv sync
-uv run prepare.py
+uv run autopipeline doctor
 ```
 
-Profile and extract one kernel:
+No GPU available? Run the CPU-safe checks:
 
 ```bash
-uv run profile.py --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
-uv run extract.py --top 1
+uv run autopipeline doctor --no-gpu
+python3 -m unittest discover -s tests
 ```
 
-Run one tree smoke:
+Prepare the workspace, profile a model, and extract one starter kernel:
 
 ```bash
-uv run tree_optimize.py \
+uv run autopipeline prepare
+uv run autopipeline profile --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
+uv run autopipeline extract --top 1
+```
+
+Run a minimal tree search on the extracted kernel:
+
+```bash
+uv run autopipeline tree run \
   --kernel-file workspace/kernel_matmul_1.py \
   --run-name smoke-tree \
   --beam-width 1 \
@@ -107,79 +60,53 @@ uv run tree_optimize.py \
   --bench-arg=--quick
 ```
 
-Run tests:
+Inspect a tree run:
 
 ```bash
-python3 -m unittest discover -s tests -v
+uv run autopipeline report workspace/tree_runs/<run-dir>
 ```
 
-## Monitoring And Feedback
+Expected run outputs:
 
-When you run the tree framework, the useful files are:
+- `workspace/profile_report.json`
+- `workspace/pipeline_profile.json`
+- `workspace/kernel_<type>_<rank>.py`
+- `workspace/tree_runs/<run>/search_state.json`
+- `workspace/tree_runs/<run>/tree_events.jsonl`
+- per-node agent and sensing logs under `workspace/tree_runs/<run>/nodes/`
 
-- `search_state.json`: current tree state and final result summary
-- `tree_events.jsonl`: round-by-round search events
-- per-node `agent/` directories: prompt, payload, telemetry, stdout, stderr, structured output
-- per-node `sensing/` files: probe history, recent diagnostics, verifier summary
+## What The CLI Wraps
 
-If you want to understand how probe and verifier data are recorded, start with:
+- `autopipeline doctor`: validate the local checkout, Python stack, torch,
+  Triton, and optional CUDA access
+- `autopipeline prepare`: generate cached data and baseline timings
+- `autopipeline profile`: profile a model and write `profile_report.json`
+- `autopipeline extract`: create starter kernels from the profile report
+- `autopipeline tree run`: run branch-based search through the tree runtime
+- `autopipeline report`: summarize a tree run
+- `autopipeline bench` / `autopipeline verify`: advanced compatibility commands
 
-- [docs/sensing.md](docs/sensing.md)
-- [docs/verifier.md](docs/verifier.md)
+## Lineage
 
-## Agent Entry
+AutoPipeline is built from the AutoKernel codebase. The AutoKernel-compatible
+single-kernel path remains available, while the tree runtime, sensing layer,
+KernelBench adapter, and pipeline bridge move the project toward broader
+pipeline co-optimization.
 
-This repository is agent-first, but the top-level page should still stay readable for humans.
+The original AutoKernel repository is tracked locally as `autokernel-base` for
+lineage and reference. New project work should target the `origin` remote.
 
-If you are wiring an external agent into the framework, start with:
+## Documentation
 
-- [docs/agent_entry.md](docs/agent_entry.md): agent runtime entry and navigation page
-- [docs/agent_contract.md](docs/agent_contract.md): dense runtime contract for planner / executor / reflector
-- [program.md](program.md): long-running AutoKernel-compatible agent instructions for the original path
-
-For Codex, prefer role config over shell wrappers:
-
-```bash
-uv run tree_optimize.py \
-  --kernel-file workspace/kernel_matmul_1.py \
-  --run-name codex-session-smoke \
-  --beam-width 1 \
-  --max-rounds 1 \
-  --children-per-expansion 1 \
-  --bench-arg=--quick \
-  --executor-provider codex
-```
-
-Use `--executor-backend command` or an explicit `--executor-command` when you
-need the legacy file-based command bridge.
-
-## Documentation Map
-
-- [docs/index.md](docs/index.md): documentation entrypoint
-- [docs/quickstart.md](docs/quickstart.md): practical setup and smoke tests
+- [docs/quickstart.md](docs/quickstart.md): practical CLI workflow and smoke tests
 - [docs/architecture.md](docs/architecture.md): current layer model and module map
-- [docs/tree_adapter.md](docs/tree_adapter.md): tree framework usage and command bridge
-- [docs/sensing.md](docs/sensing.md): how active sensing and probes work
-- [docs/verifier.md](docs/verifier.md): what the thin verifier does today
-- [CONTRIBUTING.md](CONTRIBUTING.md): local checks and contribution boundaries
-- [SECURITY.md](SECURITY.md): vulnerability reporting and local safety notes
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): project conduct expectations
+- [docs/tree_adapter.md](docs/tree_adapter.md): tree runtime details and outputs
+- [docs/sensing.md](docs/sensing.md): active sensing and probe recording
+- [docs/verifier.md](docs/verifier.md): thin verifier behavior
+- [docs/agent_entry.md](docs/agent_entry.md): agent runtime navigation
+- [docs/agent_contract.md](docs/agent_contract.md): planner / executor / reflector contract
+- [CONTRIBUTING.md](CONTRIBUTING.md): checks and contribution boundaries
+- [SECURITY.md](SECURITY.md): local execution safety notes
 
-## Current Direction
-
-The near-term direction is:
-
-- keep the framework thin
-- make docs and module boundaries clearer
-- grow sensing toward hardware-aware and pipeline-aware probes
-- keep theoretical-limit formulas in agent-authored scripts while exposing stable inputs through sensing
-- keep verifier thin while expanding evidence sources
-- move from kernel optimization toward pipeline co-optimization
-
-That means the framework should increasingly help the agent act like a practical ML systems engineer:
-
-- inspect the machine
-- inspect the software stack
-- inspect runtime breakdown
-- run targeted experiments
-- choose changes that fit the current hardware and workload
+Maintainer-only design notes live under `docs/dev/` and are intentionally kept
+out of the user quickstart path.

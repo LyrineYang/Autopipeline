@@ -16,6 +16,8 @@
 
 ### Open Source Readiness
 
+- Added the `autopipeline` CLI as the preferred user entrypoint while keeping
+  historical top-level scripts available for compatibility.
 - Split user-facing docs from maintainer development notes under `docs/dev/`.
 - Added contribution, security, code of conduct, GitHub issue, pull request,
   and CI scaffolding for public repository maintenance.

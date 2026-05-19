@@ -17,7 +17,7 @@ body:
       description: Commands, inputs, and the smallest example that reproduces the issue.
       placeholder: |
         python3 -m unittest discover -s tests
-        uv run tree_optimize.py ...
+        uv run autopipeline tree run ...
     validations:
       required: true
   - type: textarea
