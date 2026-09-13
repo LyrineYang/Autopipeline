@@ -71,12 +71,15 @@ class RunArchive:
             "scope": node.hypothesis.scope,
             "target_kind": self.task_snapshot.target_kind,
             "target": node.hypothesis.target or self.task_snapshot.target_path,
+            "work_unit": dict(node.hypothesis.work_unit),
+            "bottleneck_region": _region_summary(node.hypothesis.work_unit),
             "family": node.hypothesis.family,
             "idea_id": node.hypothesis.idea_id,
             "implementation_variant": node.hypothesis.implementation_variant,
             "symptoms": list(node.hypothesis.target_signals),
             "before": _metrics_summary(parent_eval.metrics if parent_eval is not None else {}),
             "after": _metrics_summary(evaluation.metrics if evaluation is not None else {}),
+            "verification": _verification_summary(evaluation.metrics if evaluation is not None else {}),
             "outcome": _outcome(node, parent),
             "score_delta": score_delta,
             "status": node.status,
@@ -140,6 +143,10 @@ def _outcome(node: SearchNode, parent: SearchNode | None) -> str:
     if node.evaluation_result is None:
         return "rejected_runtime"
     if not node.evaluation_result.accepted:
+        verification = _verification_summary(node.evaluation_result.metrics)
+        failure_reason = str(verification.get("failure_reason", ""))
+        if "correctness" in failure_reason or "numerical" in failure_reason:
+            return "rejected_correctness"
         correctness = str(node.evaluation_result.metrics.get("correctness", "")).upper()
         if correctness and correctness != "PASS":
             return "rejected_correctness"
@@ -166,8 +173,67 @@ def _metrics_summary(metrics: dict[str, Any]) -> dict[str, Any]:
         "tokens_per_second",
         "stage_imbalance",
         "overlap_ratio",
+        "end_to_end_speedup",
+        "verification_verdict",
+        "verification_failure_reason",
+        "verification_report_path",
     ]
     return {key: metrics[key] for key in keys if key in metrics}
+
+
+def _region_summary(work_unit: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(work_unit, dict):
+        return {}
+    region = work_unit.get("region")
+    if not isinstance(region, dict):
+        return {}
+    return {
+        "id": region.get("id"),
+        "label": region.get("label"),
+        "scope": region.get("scope"),
+        "inputs": region.get("inputs", []),
+        "outputs": region.get("outputs", []),
+        "candidate_surface": region.get("candidate_surface", {}),
+        "artifact_paths": region.get("artifact_paths", {}),
+    }
+
+
+def _verification_summary(metrics: dict[str, Any]) -> dict[str, Any]:
+    verification = metrics.get("verification")
+    if not isinstance(verification, dict):
+        if not (metrics.get("verification_verdict") or metrics.get("verification_report_path")):
+            return {}
+        verification = {
+            "backend": metrics.get("verification_backend"),
+            "verdict": metrics.get("verification_verdict"),
+            "failure_reason": metrics.get("verification_failure_reason"),
+            "report_path": metrics.get("verification_report_path"),
+        }
+    performance = verification.get("performance") if isinstance(verification.get("performance"), dict) else {}
+    numerical = verification.get("numerical_error") if isinstance(verification.get("numerical_error"), dict) else {}
+    correctness = verification.get("correctness") if isinstance(verification.get("correctness"), dict) else {}
+    artifact_paths = verification.get("artifact_paths") if isinstance(verification.get("artifact_paths"), dict) else {}
+    return {
+        "backend": verification.get("backend"),
+        "verdict": verification.get("verdict"),
+        "accepted": verification.get("accepted"),
+        "failure_reason": verification.get("failure_reason"),
+        "report_path": verification.get("report_path") or artifact_paths.get("report"),
+        "correctness": correctness,
+        "numerical_error": {
+            "available": numerical.get("available"),
+            "passed": numerical.get("passed"),
+            "max_abs_error": numerical.get("max_abs_error"),
+            "max_rel_error": numerical.get("max_rel_error"),
+        },
+        "performance": {
+            "passed": performance.get("passed"),
+            "score_metric": performance.get("score_metric"),
+            "speedup": performance.get("speedup"),
+            "reference_score_value": performance.get("reference_score_value"),
+            "candidate_score_value": performance.get("candidate_score_value"),
+        },
+    }
 
 
 def _cost_summary(budget_summary: dict[str, Any]) -> dict[str, Any]:
@@ -240,11 +306,23 @@ def _planner_prior(
                 "condition": ", ".join(str(item) for item in record.get("symptoms", [])[:3]),
                 "expected_signal": record.get("summary"),
                 "score_delta": record.get("score_delta"),
+                "verification": record.get("verification", {}),
                 "confidence": 0.7,
             }
             for record in positives[:5]
         ],
         "cooldown_families": cooldown[:5],
+        "backend_verdicts": [
+            {
+                "family": record.get("family"),
+                "idea_id": record.get("idea_id"),
+                "implementation_variant": record.get("implementation_variant"),
+                "outcome": record.get("outcome"),
+                "verification": record.get("verification", {}),
+            }
+            for record in records[-8:]
+            if record.get("verification")
+        ],
         "avoid_repeats": [
             f"{record.get('idea_id') or record.get('family')}:{record.get('implementation_variant') or record.get('target')}"
             for record in records[-8:]

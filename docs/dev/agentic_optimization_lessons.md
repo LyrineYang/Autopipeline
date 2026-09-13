@@ -141,23 +141,35 @@ DSPy 的参考价值在 metric-driven prompt / program optimization：
 
 ## Current Repo Baseline
 
-当前已经有的基础：
+这份文档最早记录的是“应该吸收哪些机制”。当前代码已经实现了其中一部分，
+所以这里先把已实现项和剩余缺口拆开，避免后续开发 agent 继续按旧缺口判断。
+
+### 已实现或已有雏形
 
 - [tree/search.py](../../tree/search.py) 管理 baseline、frontier、branch expansion、pruning、promotion。
 - [tree/planner.py](../../tree/planner.py) 产出 `PlannerPacket`，里面包括 static prior、hardware context、history context、`RegionGraph`、`BottleneckCard`、`SearchPolicyHint`、Branch Cards。
 - [tree/branch_engine.py](../../tree/branch_engine.py) 在一个固定 branch identity 下运行短 keep/revert loop。
-- [tree/command.py](../../tree/command.py) 给外部 planner / executor / reflector 写 prompt、payload、telemetry、output、stdout、stderr、status。
+- [tree/search.py](../../tree/search.py) 已经支持受控 parallel branch execution，并在 agent / probe budget 存在时收紧并行。
+- [tree/roles.py](../../tree/roles.py) 和 [tree/types.py](../../tree/types.py) 已经提供 role-based config，planner / executor / reflector 可以有各自 backend、provider、model、timeout 和 reasoning 配置。
+- [tree/agent_backend.py](../../tree/agent_backend.py)、[tree/codex_app_server.py](../../tree/codex_app_server.py) 和 [tree/codex_session.py](../../tree/codex_session.py) 已经提供 Codex app-server session backend，同时保留 legacy command bridge。
+- [tree/command.py](../../tree/command.py) 给外部 planner / executor / reflector 写 prompt、payload、telemetry、output、stdout、stderr、status，并服务 file-bridge probe 请求。
 - [tree/sensing.py](../../tree/sensing.py) 提供 passive snapshot、diagnostic probes、probe history、verifier summary。
 - [tree/budget.py](../../tree/budget.py) 记录 agent 使用量、API 调用量、令牌使用量、推理成本、probe 使用量、family 成败。
-- [pipeline/task.py](../../pipeline/task.py) 已经提供 generic pipeline workspace task 的雏形。
+- [tree/archive.py](../../tree/archive.py) 已经提供 run-local motif archive、family summary 和 planner prior。
+- [tree/viewer.py](../../tree/viewer.py) 已经能把 tree run 转成 summary、JSONL、SVG 和 HTML dashboard。
+- [pipeline/task.py](../../pipeline/task.py) 已经提供 spec-driven generic pipeline workspace task 的雏形。
 - [kernelbench/task.py](../../kernelbench/task.py) 已经把 KernelBench problem surface 接到 tree task 协议。
 
-当前主要缺口：
+### 仍未完成的缺口
 
-- branch expansion 是顺序 `_run_candidate`，不能利用互相独立的 branch。
-- planner / executor / reflector 没有一等 role config，只能通过不同 command 手工表达。
-- timeout status 已有，但诊断不够：不知道是否 zero-call、卡在 provider 还是卡在工具、最后活动是什么。
-- root memory 和 budget family stats 已有，但缺少结构化 motif archive，planner 不能稳定复用“哪类方向在什么症状下有效”。
+- session / turn 状态还没有完整并入统一 run state 和 viewer；很多运行中信息仍在 per-step logs。
+- dynamic tool 已经能作为 app-server transport 调用 sensing，但 capability 面还不够产品化：probe 列表、参数约束、失败原因、预算状态和贡献解释仍需更清晰。
+- timeout / stall 诊断已有基础，但还没有形成稳定的 semantic activity taxonomy；仍难一眼区分 provider 卡住、工具卡住、probe 等待、agent 已完成但 wrapper 未产出等情况。
+- parallel branch execution 仍是本地受控并行，不是资源感知调度器；GPU benchmark 默认仍应保守串行。
+- motif archive 已经存在，但还需要更强的 pipeline bottleneck 语义，才能稳定支持 cross-kernel / stage-level prior。
+- generic pipeline task 能跑 workspace evaluator 和 metrics，但还不是 production trace profiler、cross-kernel editor、fusion / layout-propagation engine。
+
+下面各节保留了原始设计推导。已经落地的部分应按当前代码理解；未落地的部分仍可作为后续实现边界和验收思路。
 
 ## 1. Parallel Branch Execution
 

@@ -110,7 +110,8 @@ uv run autopipeline tree run \
 ```
 
 The app-server path records per-role session files, event logs, request logs,
-turn status, token usage, and dynamic sensing tool calls.
+turn status, token usage, and dynamic-tool calls that transport sensing probe
+requests into the same sensing runtime used by the legacy bridge.
 
 The legacy command bridge can call up to three external commands:
 

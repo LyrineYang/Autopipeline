@@ -3,11 +3,20 @@ from __future__ import annotations
 import contextlib
 import io
 import unittest
+import subprocess
+import sys
+from pathlib import Path
 
 from autopipeline.cli import main
 
 
 class AutoPipelineCliTests(unittest.TestCase):
+    def test_stdlib_profiler_is_not_shadowed_by_source_entrypoint(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-c", "import cProfile, sys; assert cProfile.Profile().runcall(lambda: 7) == 7; assert 'torch' not in sys.modules"],
+            cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
     def _run(self, *args: str) -> tuple[int, str, str]:
         stdout = io.StringIO()
         stderr = io.StringIO()

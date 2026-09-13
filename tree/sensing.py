@@ -61,6 +61,7 @@ def build_pipeline_objective_evidence(
 
     metrics = _pipeline_metrics_from_observations(node=node, recent_probe_results=recent_probe_results)
     signals = _pipeline_signals(metrics)
+    backend_verification = _verification_from_metrics(metrics)
     parent_signals = (
         _pipeline_signals(parent.evaluation_result.metrics)
         if parent is not None and parent.evaluation_result is not None
@@ -74,6 +75,17 @@ def build_pipeline_objective_evidence(
             "evidence": [],
             "regressions": [],
             "uncertainty": ["Pipeline objective metrics are missing."],
+        }
+
+    if backend_verification.get("verdict") == "reject":
+        failure_reason = str(backend_verification.get("failure_reason") or "verification_failed")
+        return {
+            "verdict": "reject",
+            "summary": f"Verification backend rejected the candidate: {failure_reason}.",
+            "signals": signals,
+            "evidence": [],
+            "regressions": [f"verification backend rejected candidate: {failure_reason}"],
+            "uncertainty": [],
         }
 
     objective_order = [
@@ -817,6 +829,19 @@ def _looks_like_pipeline(task_snapshot: TaskSnapshot) -> bool:
         *task_snapshot.objective_signals,
     }
     return bool(values & {"pipeline", "stage", "end_to_end_ms", "overlap_ratio", "communication_ms"})
+
+
+def _verification_from_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    verification = metrics.get("verification")
+    if isinstance(verification, dict):
+        return verification
+    if metrics.get("verification_verdict") or metrics.get("verification_report_path"):
+        return {
+            "verdict": metrics.get("verification_verdict"),
+            "failure_reason": metrics.get("verification_failure_reason"),
+            "report_path": metrics.get("verification_report_path"),
+        }
+    return {}
 
 
 def _pipeline_metrics_from_observations(

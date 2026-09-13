@@ -32,6 +32,7 @@ class Hypothesis:
     verification_intent: list[str] = field(default_factory=list)
     supporting_evidence: list[str] = field(default_factory=list)
     disallowed_directions: list[str] = field(default_factory=list)
+    work_unit: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -174,6 +175,7 @@ class SearchConfig:
     beam_width: int
     max_rounds: int
     children_per_expansion: int
+    require_valid_baseline: bool = False
     sandbox_backend: str = "copy"
     planner_handoff_mode: str = "variant"
     max_parallel_branches: int = 1

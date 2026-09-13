@@ -19,6 +19,7 @@ def build_verifier_summary(
     failed = [item for item in recent_probe_results if item.get("status") == "failed"]
     rejected = [item for item in recent_probe_results if item.get("status") == "rejected"]
     objective_evaluation = _objective_evaluation_from_sensing(sensing_summary)
+    verification_backend = _verification_backend_from_node(node)
 
     evidence = _summaries(completed, limit=4)
     regressions = _summaries(failed + rejected, limit=4)
@@ -54,6 +55,16 @@ def build_verifier_summary(
                 status = "warning" if status == "healthy" else status
             elif verdict != "reject":
                 verdict = objective_verdict
+        if verification_backend:
+            backend_evidence, backend_regressions = _verification_backend_lines(verification_backend)
+            evidence.extend(backend_evidence)
+            regressions.extend(backend_regressions)
+            backend_verdict = str(verification_backend.get("verdict", "need_more_evidence"))
+            if backend_verdict == "reject":
+                verdict = "reject"
+                status = "warning" if status == "healthy" else status
+            elif verdict != "reject" and backend_verdict == "keep":
+                verdict = "keep"
     elif failed and not completed:
         verdict = "need_more_evidence"
         status = "blocked"
@@ -97,6 +108,7 @@ def build_verifier_summary(
         "regressions": _dedupe(regressions)[:5],
         "uncertainty": _dedupe(uncertainty)[:5],
         "objective_evaluation": objective_evaluation,
+        "verification_backend": verification_backend,
         "probe_health": {
             "probe_count": len(recent_probe_results),
             "completed_count": len(completed),
@@ -181,6 +193,49 @@ def _objective_evaluation_from_sensing(sensing_summary: dict[str, Any] | None) -
     if isinstance(pipeline, dict):
         return pipeline
     return None
+
+
+def _verification_backend_from_node(node: SearchNode | None) -> dict[str, Any] | None:
+    if node is None or node.evaluation_result is None:
+        return None
+    metrics = node.evaluation_result.metrics
+    verification = metrics.get("verification")
+    if isinstance(verification, dict):
+        return verification
+    if metrics.get("verification_verdict") or metrics.get("verification_report_path"):
+        return {
+            "backend": metrics.get("verification_backend"),
+            "verdict": metrics.get("verification_verdict"),
+            "failure_reason": metrics.get("verification_failure_reason"),
+            "report_path": metrics.get("verification_report_path"),
+        }
+    return None
+
+
+def _verification_backend_lines(report: dict[str, Any]) -> tuple[list[str], list[str]]:
+    verdict = str(report.get("verdict", ""))
+    failure_reason = report.get("failure_reason")
+    performance = report.get("performance") if isinstance(report.get("performance"), dict) else {}
+    numerical = report.get("numerical_error") if isinstance(report.get("numerical_error"), dict) else {}
+    report_path = report.get("report_path")
+    if not report_path and isinstance(report.get("artifact_paths"), dict):
+        report_path = report["artifact_paths"].get("report")
+    line = (
+        f"verification_backend={report.get('backend', 'unknown')} "
+        f"verdict={verdict} speedup={performance.get('speedup')} "
+        f"max_abs_error={numerical.get('max_abs_error')}"
+    )
+    evidence: list[str] = []
+    regressions: list[str] = []
+    if verdict == "reject":
+        regressions.append(line)
+        if failure_reason:
+            regressions.append(f"verification_failure_reason={failure_reason}")
+    else:
+        evidence.append(line)
+    if report_path:
+        evidence.append(f"verification_report={report_path}")
+    return evidence, regressions
 
 
 def _string_list(value: Any) -> list[str]:

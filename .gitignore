@@ -25,6 +25,7 @@ run.log
 # Cache
 .cache/
 uv.lock
+.DS_Store
 
 # Analysis output (regenerated)
 report.md

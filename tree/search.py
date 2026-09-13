@@ -89,7 +89,8 @@ class TreeSearchEngine:
         baseline = self._initialize_baseline()
         self.frontier_node_ids = [baseline.id]
 
-        for round_index in range(self.config.max_rounds):
+        rounds = 0 if self.config.require_valid_baseline and not baseline.evaluation_result.accepted else self.config.max_rounds
+        for round_index in range(rounds):
             parent_packets = self._build_parent_packets()
             active_parent_packets = [
                 (parent, packet)
@@ -142,6 +143,7 @@ class TreeSearchEngine:
                         "frozen_decisions": list(packet.frozen_decisions),
                         "branch_scope": hypothesis.scope,
                         "branch_target": hypothesis.target,
+                        "work_unit": dict(hypothesis.work_unit),
                         "planner_handoff_mode": self.config.planner_handoff_mode,
                         "verification_intent": list(hypothesis.verification_intent),
                     }
@@ -381,7 +383,9 @@ class TreeSearchEngine:
                     "planner_prior": str(self.archive.planner_prior_path),
                 },
             }
-            self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            temporary = self.state_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            temporary.replace(self.state_path)
 
     def _log_event(self, event_type: str, payload: dict[str, object]) -> None:
         with self._state_lock:

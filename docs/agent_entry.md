@@ -13,8 +13,15 @@ Use this page to answer one question fast:
 
 ## Runtime Graph
 
+The public pipeline path is `autopipeline pipeline init/check/evaluate/run/export`.
+Its CLI is in `autopipeline/pipeline_cli.py`; the fixed PyTorch harness is
+`autopipeline/evaluate.py`. See [Quick Start](quickstart.md) for the actual workload
+contract and server acceptance sequence. A missing GPU blocks GPU evaluation,
+not installation, configuration, CPU integration checks, or product development.
+
 - human overview: [README.md](../README.md)
 - layer map: [docs/architecture.md](architecture.md)
+- design boundaries: [docs/agent_design_context.md](agent_design_context.md)
 - framework runtime contract: [docs/agent_contract.md](agent_contract.md)
 - sensing details: [docs/sensing.md](sensing.md)
 - verifier details: [docs/verifier.md](verifier.md)

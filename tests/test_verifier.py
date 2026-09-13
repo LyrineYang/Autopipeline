@@ -209,6 +209,76 @@ class VerifierTests(unittest.TestCase):
         self.assertEqual(summary["objective_evaluation"]["verdict"], "reject")
         self.assertTrue(any("end-to-end latency regressed" in item for item in summary["regressions"]))
 
+    def test_verifier_uses_backend_reject_over_fast_pipeline_metrics(self) -> None:
+        task_snapshot = TaskSnapshot(
+            task_type="pipeline",
+            objective="lower end-to-end latency",
+            target_path="/tmp/pipeline.yaml",
+            editable_paths=["pipeline.yaml"],
+            constraints=[],
+            reference_paths=[],
+            target_kind="pipeline",
+            objective_signals=["end_to_end_ms"],
+        )
+        parent = SearchNode(
+            id="node-0001",
+            parent_id=None,
+            depth=0,
+            hypothesis=Hypothesis(id="parent", title="Parent", core_hypothesis="baseline"),
+            evaluation_result=EvaluationResult(
+                accepted=True,
+                score=1.0,
+                metrics={"end_to_end_ms": 100.0},
+                summary="baseline pipeline",
+            ),
+        )
+        node = SearchNode(
+            id="node-0002",
+            parent_id="node-0001",
+            depth=1,
+            hypothesis=Hypothesis(id="branch", title="Branch", core_hypothesis="fast wrong candidate"),
+            evaluation_result=EvaluationResult(
+                accepted=False,
+                score=2.0,
+                metrics={
+                    "end_to_end_ms": 50.0,
+                    "verification": {
+                        "backend": "executable",
+                        "verdict": "reject",
+                        "failure_reason": "numerical_error_exceeded",
+                        "report_path": "/tmp/report.json",
+                        "numerical_error": {
+                            "max_abs_error": 1.0,
+                        },
+                        "performance": {
+                            "speedup": 2.0,
+                        },
+                    },
+                },
+                summary="fast but wrong",
+            ),
+        )
+
+        sensing_summary = build_sensing_summary(
+            task_snapshot=task_snapshot,
+            recent_probe_results=[],
+            parent=parent,
+            node=node,
+        )
+        summary = build_verifier_summary(
+            task_snapshot=task_snapshot,
+            root=RootMemory(objective=task_snapshot.objective),
+            recent_probe_results=[],
+            parent=parent,
+            node=node,
+            sensing_summary=sensing_summary,
+        )
+
+        self.assertEqual(summary["verdict"], "reject")
+        self.assertEqual(summary["objective_evaluation"]["verdict"], "reject")
+        self.assertEqual(summary["verification_backend"]["failure_reason"], "numerical_error_exceeded")
+        self.assertTrue(any("verification_failure_reason" in item for item in summary["regressions"]))
+
     def test_verifier_accepts_task_specific_summary_augmentation(self) -> None:
         task_snapshot = TaskSnapshot(
             task_type="pipeline",

@@ -65,11 +65,18 @@ def default_run_dir(repo_root: Path, kernel_path: Path) -> Path:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    from tree.agent_backend import role_uses_app_server
+    from tree.roles import role_config_for
+    roles = build_role_configs_from_args(args)
+    if not args.executor_command and not role_uses_app_server(role_config_for(roles, "executor"), args.executor_command):
+        parser.error("An executor is required: --executor-backend codex-app-server or --executor-command")
 
     repo_root = Path(__file__).resolve().parent
     kernel_file = Path(args.kernel_file).resolve()
     run_name = args.run_name or kernel_file.stem
     run_dir = Path(args.run_dir).resolve() if args.run_dir else default_run_dir(repo_root, kernel_file)
+    if run_dir.exists():
+        parser.error(f"Run directory already exists: {run_dir}; choose a new directory")
 
     task = AutoKernelTask(
         repo_root=repo_root,

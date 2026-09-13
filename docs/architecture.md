@@ -11,9 +11,57 @@ The repository has one preferred user entrypoint:
 
 Under that CLI, the tree framework is the shared runtime for planner, sensing,
 verifier, branch-local execution, budget tracking, archive reuse, and run
-viewing. The default task surface is still AutoKernel-compatible single-kernel
-optimization, while KernelBench and generic pipeline adapters plug into the
-same runtime.
+viewing. The default product flow is a pipeline workspace with a fixed reference
+and an editable candidate. AutoKernel-compatible extracted kernels and
+KernelBench problems remain task adapters using the same runtime.
+
+`autopipeline/pipeline_cli.py` owns initialization, preflight checks, frozen run
+inputs, status, and export. `autopipeline/evaluate.py` is the installed PyTorch
+harness: it loads user models, checks every tensor output across seeded inputs,
+measures synchronized forward latency, and writes torch profiler artifacts.
+`pipeline/verification_backend.py` judges those measurements. `pipeline/task.py`
+adapts that contract to the existing tree engine and enforces protected files.
+The evaluator executes outside the editable workload's source files.
+
+The product and benchmark development lines stay separate. Level 5 owns its
+task definitions, reference baselines and scoring policy. apimetric owns
+benchmark-side measurement and experiment accounting. Neither is merged into
+the product runtime. The product's own budget ledger records its execution;
+an external benchmark can independently measure the same run.
+
+The current research stage is pipeline co-optimization in a fixed hardware and
+workload setting. That means the framework should help an agent optimize the
+end-to-end pipeline for the current task, not claim general infrastructure
+automation across arbitrary hardware yet.
+
+## Runtime Ownership Model
+
+The current runtime follows a small ownership split inspired by modern
+long-running agent systems:
+
+- Brain: planner, executor, and reflector roles. These roles reason and act,
+  but they do not own evaluation truth.
+- Hands: task sandboxes, editable workspaces, shell commands, profilers, and
+  probes. These perform actions against a concrete workspace.
+- Session: app-server thread / turn state, event logs, request logs, token
+  usage, and resumable role state. Session is an agent management interface,
+  not the optimization algorithm.
+- Evidence: sensing records, evaluator outputs, verifier summaries, archive
+  motifs, and run-view artifacts. Evidence is independent of any one agent
+  session and is the durable substrate for planning and review.
+
+This split is important for future-proofing. As coding agents improve, the
+framework should be able to swap harnesses or agent backends without changing
+what counts as evidence or how candidates are judged.
+
+Transport is separate from ownership:
+
+- app-server dynamic tools expose a transport for Codex sessions to request
+  sensing probes
+- the legacy file bridge exposes a transport for command-based agents to
+  request the same probes
+- sensing still owns probe execution, recording, and verifier refresh
+- evaluators and verifiers still own candidate judgment, not agent self-report
 
 ## Tree Framework Layers
 
@@ -114,7 +162,7 @@ The app-server backend owns:
 - one thread / turn lifecycle per role session
 - event and request logs
 - turn status, token usage, and session persistence
-- dynamic sensing tool calls such as `run_sensing_probe`
+- dynamic-tool transport for calls such as `run_sensing_probe`
 - failure surfacing for failed turns, invalid JSON, timeout, and cancellation
 
 The legacy command bridge owns subprocess lifecycle:
@@ -212,6 +260,9 @@ Today the shipped task surfaces are:
 The remaining boundary is narrower:
 
 - the AutoKernel-compatible task still edits `kernel.py` inside a branch sandbox
-- the pipeline task is spec-driven and generic, not a production pipeline profiler/editor
+- the pipeline task is spec-driven and generic; it can evaluate a declared
+  workspace and metrics contract, but it is not a production pipeline profiler,
+  trace analyzer, cross-kernel editor, fusion engine, or layout-propagation
+  engine
 - the framework is not a long-running issue-tracker daemon
 - in-flight subprocesses are not resumed after process exit, though each command has timeout, cancellation, activity, and diagnostic handling

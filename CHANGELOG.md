@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Product workflow and examples
+
+- Consolidated the installable pipeline flow: initialize, check, evaluate, search,
+  report, export, and independently recheck candidates.
+- Added packaged residual MLP, attention, and offline local encoder examples.
+- Added checks for changed external model assets and protected evaluator files.
+- Separated the legacy profile CLI from Python's standard profiler so importing
+  Transformers / torch compilation works from the source checkout.
+- Established an independent product mainline while retaining Level 5 and
+  apimetric as separate benchmark development lines.
+
+
 ### Tree Runtime And Agent Sessions
 
 - Added a task-agnostic tree runtime path for AutoKernel-compatible,

@@ -1,20 +1,79 @@
 # Symphony Agent Runtime 对比报告
 
-更新日期：2026-05-14
+更新日期：2026-05-19
 
 这份报告只回答一个问题：
 
 > 怎样把当前库从“能跑实验的工具”推进到“可以让 coding agent 稳定开发、持续运行、可观察、可恢复的工具”？
 
-参考对象是本地的 Symphony 仓库。重点不是照搬它的 Linear 工作流，而是学习它怎样启动、管理、通讯、调用和同步 agent。
+参考对象包括 Anthropic Managed Agents、OpenAI Symphony、OpenAI
+Agents SDK 的新 harness 方向，以及本地的 Symphony 仓库。重点不是照搬
+它们的产品形态，而是学习它们怎样把 session、sandbox、tool transport、
+事件流和 operator state 拆成更稳定的接口。
 
 ## 一句话结论
 
 当前库已经不是简单 toy。它有 sandbox、tree search、branch-local loop、evaluator、sensing、超时诊断、预算记录和 run viewer。这些是研究型 agentic optimization 工具的核心骨架。
 
-但它还没有达到“真正开发使用工具”的完整形态。主要差距是：当前系统把 agent 当成一次命令执行，而 Symphony 把 agent 当成一个可管理会话。会话有启动、turn、事件、工具调用、token、失败、续跑、状态快照和 operator 可见状态。
+这轮 session 化改造的意义不是把优化问题变成长聊天，也不是让 dynamic tool
+取代 sensing。更准确地说，session 是 agent 管理形式：它承载 thread、turn、
+事件、token、失败、续跑和 operator 可见状态。优化系统的研究核心仍然是
+evaluator-driven pipeline co-optimization。
 
-因此不建议重新设计一个新的调度器。更好的路线是在现有 tree runtime 上补一层 agent session / event / state sync 能力，让现有 command bridge 继续可用，同时让 Codex 这类 agent 从“一次性黑盒命令”变成“运行中可观察、可控制、可继续的开发者工具”。
+因此不建议重新设计一个新的调度器。更好的路线是在现有 tree runtime 上补强
+agent session / event / state sync 能力，让现有 command bridge 继续可用，
+同时让 Codex 这类 agent 从“一次性黑盒命令”变成“运行中可观察、可控制、
+可继续的开发者工具”。
+
+## 三条 Runtime 原则
+
+### 1. Session 是管理接口，不是研究算法
+
+Anthropic Managed Agents 的核心启发是把 brain、hands、session 拆开：
+agent / harness 是 brain，sandbox / tools 是 hands，session 是外部持久事件日志。
+这让 harness、sandbox 和工具实现可以替换，而不破坏稳定接口。
+
+映射到本项目：
+
+- planner / executor / reflector 是 brain 的角色切分；
+- sandbox、benchmark、profile、probe 是 hands；
+- Codex app-server thread / turn 是 session transport；
+- sensing、evaluator、verifier、archive 是 evidence 和 judgment 面。
+
+所以 session 化是为了可观察、可恢复、可替换和 future-proof，不是为了让 agent
+绕过 evaluator，也不是为了把所有 evidence 塞进上下文窗口。
+
+### 2. Work unit 不是 session，而是 branch / bottleneck / trial
+
+Symphony 的关键转向是从“管理 coding sessions”变成“管理 work”。它用 issue
+tracker 做控制面，每个 task 有独立 workspace、agent run、状态和 proof of work。
+
+本项目不应该照搬 Linear daemon。我们的 work unit 更自然是：
+
+- 一个 pipeline bottleneck region；
+- 一个 branch identity；
+- 一次 isolated candidate trial；
+- 一个 end-to-end optimization attempt。
+
+session 是执行 work unit 的接口。tree runtime 仍然负责 branch、frontier、budget、
+archive 和 evaluator-driven keep / revert。
+
+### 3. Harness 可以现代化，Evidence 不能被吞掉
+
+OpenAI Agents SDK 的新方向强调更强 harness、sandbox-aware orchestration、
+tool use、memory、file/code execution 和可携带 workspace manifest。这说明我们
+引入 app-server session 是合理的现代化。
+
+但这个现代化不能改变 ownership：
+
+- app-server dynamic tool 是 transport；
+- sensing 是 probe execution 和 evidence recording；
+- evaluator / verifier 是 judgment；
+- archive 是可审计经验；
+- run viewer 是人类和后续 planner 的阅读面。
+
+换句话说，`run_sensing_probe` 可以是 session 内最方便的调用方式，但 sensing
+本身不属于 dynamic tool 层。
 
 ## 对比口径
 
@@ -33,13 +92,17 @@ Symphony 的主线是：
 
 1. 为优化任务创建 baseline 和 branch。
 2. 为每个 branch 创建 sandbox。
-3. 把 prompt、payload、telemetry 写给外部 agent command。
-4. 启动子进程，期间服务 probe 请求。
-5. 等子进程写回 JSON。
-6. evaluator 决定 keep / revert。
-7. 搜索状态、预算、viewer 记录最终结果。
+3. 通过 role backend 启动 planner / executor / reflector。
+4. app-server session 或 legacy command bridge 把 prompt、payload、telemetry
+   和 sensing manifest 交给 agent。
+5. 运行中通过 dynamic-tool transport 或 file-bridge transport 服务 probe 请求。
+6. agent 返回 JSON 或 sandbox diff。
+7. evaluator 决定 keep / revert。
+8. 搜索状态、预算、archive、viewer 记录最终结果。
 
-两边真正相同的是“任务 -> workspace/sandbox -> agent -> 结果 -> 状态更新”。不同的是，Symphony 的 agent 运行过程是一等对象；本项目的 agent 运行过程主要还是命令执行的副产物。
+两边真正相同的是“任务 -> workspace/sandbox -> agent -> 结果 -> 状态更新”。
+不同的是，Symphony 的产品中心是 work orchestration；本项目的研究中心是
+evaluator-driven optimization。session 化应该服务这个研究循环，而不是替代它。
 
 ## 当前库已经具备的基础
 
@@ -57,7 +120,7 @@ Symphony 的主线是：
 
 ## 核心差距
 
-### 1. Agent 生命周期还不是一等对象
+### 1. Agent 生命周期已经有 backend，但还没有成为统一状态面
 
 Symphony 明确区分：
 
@@ -69,7 +132,11 @@ Symphony 明确区分：
 - 是否发生工具调用；
 - 是否进入失败、取消、超时或 stall。
 
-本项目现在也会记录进程开始、超时、取消、输出文件变化等信息，但这些更像进程层面的观察，不是 agent 语义层面的生命周期。
+本项目现在已经有 app-server backend，可以创建或恢复 thread、启动 turn、
+记录事件、请求、token usage、diff 和 dynamic tool 调用。legacy command
+bridge 也会记录进程开始、超时、取消、输出文件变化等信息。
+
+剩余差距在于：这些 agent 语义事件还没有稳定合并成统一的 run / node 状态面。
 
 这会带来一个直接问题：当一个 executor 卡住时，我们知道“文件多久没变”，但不一定知道它是卡在模型请求、工具审批、probe 等待、命令执行，还是 agent 已经完成但 wrapper 没写结果。
 
@@ -95,7 +162,7 @@ Symphony 明确区分：
 
 Symphony 的做法是把 agent update 合并进 orchestrator runtime state，然后 snapshot / dashboard 直接读这个状态。
 
-### 4. Codex 集成边界偏薄
+### 4. Codex 集成边界已成形，但状态整合还偏薄
 
 当前 Codex 仍保留 `codex exec` wrapper 作为兼容路径。同时，planner、executor、reflector 已经可以通过统一 role backend 走 Codex app-server session。该路径可以创建或恢复 thread、启动 turn、接收事件，并记录 token usage、diff、dynamic tool 调用和 activity。
 

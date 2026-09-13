@@ -22,7 +22,14 @@ HELP = """\
 AutoPipeline command line
 
 Usage:
+  autopipeline --version
+  autopipeline pipeline examples
   autopipeline doctor [--no-gpu] [--json]
+  autopipeline pipeline init DIRECTORY [--source WORKSPACE] [--device cuda|cpu]
+  autopipeline pipeline check --spec DIRECTORY/pipeline.json
+  autopipeline pipeline evaluate --spec DIRECTORY/pipeline.json
+  autopipeline pipeline run --spec DIRECTORY/pipeline.json --executor-backend codex-app-server
+  autopipeline pipeline export RUN_DIR --output-dir DIRECTORY
   autopipeline prepare [args...]
   autopipeline profile [args...]
   autopipeline extract [args...]
@@ -32,11 +39,10 @@ Usage:
   autopipeline verify [args...]
 
 Primary flow:
-  autopipeline doctor
-  autopipeline prepare
-  autopipeline profile --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
-  autopipeline extract --top 1
-  autopipeline tree run --kernel-file workspace/kernel_matmul_1.py --run-name smoke-tree --beam-width 1 --max-rounds 1 --children-per-expansion 1 --bench-arg=--quick
+  autopipeline pipeline init my-pipeline --example residual-mlp --device cpu
+  autopipeline pipeline check --spec my-pipeline/pipeline.json
+  autopipeline pipeline evaluate --spec my-pipeline/pipeline.json --run-dir my-pipeline/runs/baseline
+  autopipeline pipeline run --spec my-pipeline/pipeline.json --executor-backend codex-app-server
 
 Compatibility:
   Existing top-level scripts still work, but new user docs should prefer this CLI.
@@ -50,7 +56,7 @@ Usage:
   autopipeline tree run [tree_optimize.py args...]
 
 Example:
-  autopipeline tree run --kernel-file workspace/kernel_matmul_1.py --run-name smoke-tree --beam-width 1 --max-rounds 1 --children-per-expansion 1 --bench-arg=--quick
+  autopipeline tree run --kernel-file workspace/kernel_matmul_1.py --run-name smoke-tree --beam-width 1 --max-rounds 1 --children-per-expansion 1 --bench-arg=--quick --executor-backend codex-app-server
 """
 
 
@@ -61,16 +67,16 @@ autopipeline {command}
 {description}
 
 Arguments are forwarded to `{relative_path}` inside the source checkout.
-Run this command after `uv sync` so optional runtime dependencies are present.
+Run this command after `uv sync --extra gpu` so runtime dependencies are present.
 """
 
 
 def _find_source_root() -> Path:
-    starts = [Path.cwd(), Path(__file__).resolve()]
+    starts = [Path(__file__).resolve(), Path.cwd()]
     for start in starts:
         current = start if start.is_dir() else start.parent
         for candidate in [current, *current.parents]:
-            if (candidate / "pyproject.toml").is_file() and (candidate / "README.md").is_file():
+            if (candidate / "tree_optimize.py").is_file() and (candidate / "autopipeline" / "cli.py").is_file():
                 return candidate
     return Path.cwd()
 
@@ -163,7 +169,8 @@ def _doctor(argv: list[str]) -> int:
     triton_ok, triton_version = _optional_module("triton")
     checks["triton"] = {"available": triton_ok, "version": triton_version}
 
-    ok = checks["has_pyproject"] and checks["has_readme"]
+    # The installed pipeline runtime works outside a source checkout.
+    ok = importlib.util.find_spec("pipeline") is not None and importlib.util.find_spec("tree") is not None
     if require_gpu:
         ok = ok and torch_ok and triton_ok and cuda_available
 
@@ -187,6 +194,10 @@ def _doctor(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args == ["--version"]:
+        from . import __version__
+        print(__version__)
+        return 0
     if not args or args[0] in {"-h", "--help"}:
         print(HELP)
         return 0
@@ -197,6 +208,25 @@ def main(argv: list[str] | None = None) -> int:
     if command == "doctor":
         return _doctor(rest)
 
+    if command == "pipeline":
+        from .pipeline_cli import main as pipeline_main
+        return pipeline_main(rest)
+
+    if command == "report":
+        import argparse
+        from tree.viewer import write_run_view
+        parser = argparse.ArgumentParser(prog="autopipeline report")
+        parser.add_argument("run_dir")
+        parser.add_argument("--output-dir")
+        parsed = parser.parse_args(rest)
+        try:
+            paths = write_run_view(Path(parsed.run_dir).resolve(), output_dir=Path(parsed.output_dir).resolve() if parsed.output_dir else None)
+            print(f"Dashboard: {paths.dashboard}\nSummary: {paths.summary_markdown}")
+            return 0
+        except (OSError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+
     if command == "tree":
         if not rest or rest[0] in {"-h", "--help"}:
             print(TREE_HELP)
@@ -205,8 +235,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: unknown tree command: {rest[0]}", file=sys.stderr)
             return 2
         if len(rest) > 1 and rest[1] in {"-h", "--help"}:
-            print(_forwarded_help("tree run", "tree_optimize.py", "Run branch-based tree search."))
-            return 0
+            return _run_source_script("tree_optimize.py", rest[1:])
         return _run_source_script("tree_optimize.py", rest[1:])
 
     if command in COMMANDS:

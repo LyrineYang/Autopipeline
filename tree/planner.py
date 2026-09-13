@@ -558,6 +558,7 @@ def _normalize_hypothesis(
             verification_intent=list(item.verification_intent),
             supporting_evidence=list(item.supporting_evidence),
             disallowed_directions=list(item.disallowed_directions),
+            work_unit=dict(item.work_unit),
         )
 
     if isinstance(item, str):
@@ -578,6 +579,7 @@ def _normalize_hypothesis(
             verification_intent=list(default.verification_intent) if default is not None else [],
             supporting_evidence=list(default.supporting_evidence) if default is not None else [],
             disallowed_directions=list(default.disallowed_directions) if default is not None else [],
+            work_unit=dict(default.work_unit) if default is not None else {},
         )
 
     if not isinstance(item, dict):
@@ -631,6 +633,8 @@ def _normalize_hypothesis(
         ),
         supporting_evidence=_string_list_or_default(item, "supporting_evidence", default.supporting_evidence if default is not None else []),
         disallowed_directions=_string_list_or_default(item, "disallowed_directions", default.disallowed_directions if default is not None else []),
+        work_unit=_dict_value(item.get("work_unit"))
+        or (dict(default.work_unit) if default is not None else {}),
     )
 
 
