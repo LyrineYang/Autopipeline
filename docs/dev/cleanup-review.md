@@ -6,12 +6,15 @@ worktree、分离网站、合并重复入口，并重新验证安装包。
 ## 工作树与分支
 
 当前只保留 `main`、`codex/level5`、`codex/apimetric` 三个 worktree。
-8 个历史目录已通过 `git worktree remove` 正式回收：139c、301a、3fc8、55fb、
+最初 8 个历史目录已通过 `git worktree remove` 正式回收：139c、301a、3fc8、55fb、
 5b15、6046、cf83、d831。回收前确认：
 
 - 无未提交源码、无独有提交；只有 3fc8 带有可重建的 Python 字节码缓存。
 - 关联任务未运行，未发现使用这些目录的进程。
 - 原提交已包含在产品 main 中，任务历史不删除。
+
+整理期间，已结束的 `Standup summary` 自动化新增 `7c06`，也完成相同检查后回收。
+因此本次共回收 9 个目录；定时任务设置不变，未来运行可能再次生成检出目录。
 
 `codex/tree` 与 `codex/open-source-release-prep` 两个冗余本地分支也已删除，
 其提交仍在 main 中；远端分支未改动。目录、提交和恢复方法见
@@ -27,7 +30,7 @@ Level 5、apimetric 的 HEAD、完整状态和 81 个改动文件的哈希与整
 | 网站 | 从产品目录迁至 `/Users/nianzhen/Desktop/autopipeline-site`；25 个保留文件逐项校验，源码、锁文件、README 和部署配置保留 |
 | 网站缓存 | 清理 .npm-cache 和 dist，网站从约 237 MiB 降至 1.3 MiB |
 | Git 对象 | 从约 1.9 GiB 降至 743 MiB；保留全部 6,190 个原对象，缺失为零 |
-| 历史工作树 | 回收 8 个目录，约 13 MiB |
+| 历史工作树 | 回收原有 8 个及新增 1 个目录，约 15 MiB |
 | CPU 验收环境 | 保留约 749 MiB，用于后续产品验证；不是发布包的一部分 |
 | 实验产物 | 保留运行结果、profiler、日志和各版本 wheel，不以少量空间换取证据丢失 |
 
