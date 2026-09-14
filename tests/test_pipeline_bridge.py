@@ -7,10 +7,9 @@ from pathlib import Path
 
 from pipeline.task import (
     PipelineTask,
-    create_pipeline_smoke_fixture,
-    run_pipeline_smoke,
     setup_pipeline_workspace,
 )
+from pipeline.smoke import create_pipeline_smoke_fixture, run_pipeline_smoke
 from tree.planner import Planner
 from tree.sensing import build_sensing_summary
 from tree.types import Hypothesis, RootMemory, SearchNode

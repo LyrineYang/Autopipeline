@@ -1,7 +1,7 @@
 # Tree Adapter
 
 This page explains the current tree-search runtime. Use `autopipeline tree run`
-for the public AutoKernel-compatible task path; direct adapter scripts are
+for the source-checkout AutoKernel-compatible task path; direct adapter scripts are
 advanced compatibility entrypoints.
 
 The framework core is task-agnostic. The AutoKernel-compatible CLI still optimizes one
@@ -33,7 +33,8 @@ uv run autopipeline tree run \
   --beam-width 2 \
   --max-rounds 3 \
   --children-per-expansion 2 \
-  --bench-arg=--quick
+  --bench-arg=--quick \
+  --executor-backend codex-app-server
 ```
 
 Advanced adapter entrypoints remain available for local experiments:
@@ -47,23 +48,25 @@ uv run kernelbench/tree_run.py \
   --problem 1 \
   --beam-width 1 \
   --max-rounds 1 \
-  --children-per-expansion 1
+  --children-per-expansion 1 \
+  --executor-backend codex-app-server
 ```
 
-Generic pipeline smoke:
+Generic pipeline smoke (synthetic harness check, not a model or performance experiment; use a new run directory):
 
 ```bash
-uv run pipeline/bridge.py smoke
+uv run autopipeline pipeline smoke --run-dir workspace/pipeline-smoke
 ```
 
 Generic pipeline spec run:
 
 ```bash
-uv run pipeline/bridge.py run \
+uv run autopipeline pipeline run \
   --spec path/to/pipeline_task.json \
   --beam-width 2 \
   --max-rounds 1 \
-  --children-per-expansion 2
+  --children-per-expansion 2 \
+  --executor-backend codex-app-server
 ```
 
 Important flags:
@@ -94,7 +97,7 @@ The adapter has two role backends:
 - Codex app-server sessions for Codex planner / executor / reflector roles
 - the legacy JSON command bridge for local scripts and non-Codex agents
 
-For Codex, prefer provider-based role config:
+These examples require an installed and authenticated Codex backend. Provider-based role config is also supported:
 
 ```bash
 uv run autopipeline tree run \
@@ -235,4 +238,5 @@ What it is not yet:
 
 - a long-running issue-tracker daemon
 - a durable resume system for in-flight subprocesses after process exit
-- a production pipeline profiler / cross-kernel editor / fusion or layout-propagation engine
+- an automatic trace-analysis, fusion, or layout-propagation engine; the native
+  pipeline evaluator already records torch profiler traces and operator summaries

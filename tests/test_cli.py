@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import tempfile
 import unittest
 import subprocess
 import sys
@@ -11,6 +13,51 @@ from autopipeline.cli import main
 
 
 class AutoPipelineCliTests(unittest.TestCase):
+    def test_product_import_keeps_smoke_lazy_and_legacy_imports_work(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-c", "import autopipeline.pipeline_cli, sys; "
+             "assert 'pipeline.smoke' not in sys.modules; "
+             "from pipeline.task import PipelineSmokeAgent, create_pipeline_smoke_fixture; "
+             "from pipeline import run_pipeline_smoke; "
+             "from pipeline import smoke; "
+             "assert PipelineSmokeAgent is smoke.PipelineSmokeAgent; "
+             "assert create_pipeline_smoke_fixture is smoke.create_pipeline_smoke_fixture; "
+             "assert run_pipeline_smoke is smoke.run_pipeline_smoke"],
+            cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_report_missing_run_fails_without_creating_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing"
+            code, stdout, stderr = self._run("report", str(missing))
+            self.assertEqual(code, 1)
+            self.assertEqual(stdout, "")
+            self.assertIn("search_state.json", stderr)
+            self.assertFalse(missing.exists())
+
+    def test_report_legacy_script_matches_installed_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "run"
+            run.mkdir()
+            (run / "search_state.json").write_text(json.dumps({
+                "task_snapshot": {"task_type": "pipeline", "objective": "Report contract"},
+                "nodes": {},
+            }))
+            output = Path(tmp) / "report"
+            code, stdout, stderr = self._run("report", str(run), "--output-dir", str(output))
+            self.assertEqual(code, 0, stderr)
+            summary = (output / "run_summary.json").read_text()
+            script = Path(__file__).resolve().parents[1] / "scripts/tree_report.py"
+            legacy = subprocess.run(
+                [sys.executable, str(script), str(run), "--output-dir", str(output)],
+                cwd=tmp, capture_output=True, text=True,
+            )
+            self.assertEqual(legacy.returncode, 0, legacy.stderr)
+            self.assertEqual(legacy.stdout, stdout)
+            self.assertEqual((output / "run_summary.json").read_text(), summary)
+            self.assertTrue((output / "dashboard.html").is_file())
+
     def test_stdlib_profiler_is_not_shadowed_by_source_entrypoint(self) -> None:
         result = subprocess.run(
             [sys.executable, "-c", "import cProfile, sys; assert cProfile.Profile().runcall(lambda: 7) == 7; assert 'torch' not in sys.modules"],

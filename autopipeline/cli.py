@@ -14,7 +14,6 @@ COMMANDS = {
     "extract": ("extract.py", "Extract starter kernels from a profile report."),
     "bench": ("bench.py", "Benchmark the current kernel.py candidate."),
     "verify": ("verify.py", "Run end-to-end verification."),
-    "report": ("scripts/tree_report.py", "Summarize a tree run directory."),
 }
 
 
@@ -213,19 +212,8 @@ def main(argv: list[str] | None = None) -> int:
         return pipeline_main(rest)
 
     if command == "report":
-        import argparse
-        from tree.viewer import write_run_view
-        parser = argparse.ArgumentParser(prog="autopipeline report")
-        parser.add_argument("run_dir")
-        parser.add_argument("--output-dir")
-        parsed = parser.parse_args(rest)
-        try:
-            paths = write_run_view(Path(parsed.run_dir).resolve(), output_dir=Path(parsed.output_dir).resolve() if parsed.output_dir else None)
-            print(f"Dashboard: {paths.dashboard}\nSummary: {paths.summary_markdown}")
-            return 0
-        except (OSError, ValueError) as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
+        from .report import main as report_main
+        return report_main(rest)
 
     if command == "tree":
         if not rest or rest[0] in {"-h", "--help"}:

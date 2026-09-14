@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Product cleanup (1.4.0a3)
+
+- Unified the installed report command and legacy script, including diagnostics
+  for missing run data; preserved the historical script entrypoint.
+- Moved synthetic harness fixtures out of the pipeline task implementation and
+  load them only for smoke runs, with compatibility for existing imports.
+- Retired eight merged historical worktrees and separated the website from the
+  library checkout. Design documents and independent benchmarks are retained.
+
 ### Product workflow and examples
 
 - Consolidated the installable pipeline flow: initialize, check, evaluate, search,

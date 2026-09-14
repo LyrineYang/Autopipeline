@@ -13,7 +13,7 @@ from pathlib import Path
 import shutil
 import sys
 
-from pipeline.task import PipelineSpec, PipelineTask, run_pipeline_smoke, setup_pipeline_workspace
+from pipeline.task import PipelineSpec, PipelineTask, setup_pipeline_workspace
 from tree.agent import CommandAgentAdapter
 from tree.agent_backend import role_uses_app_server
 from tree.roles import add_role_config_args, build_role_configs_from_args, role_config_for
@@ -297,6 +297,7 @@ def main(argv=None) -> int:
         elif args.command == "setup":
             print(json.dumps(setup_pipeline_workspace(Path(args.spec), Path(args.output_dir)), indent=2))
         elif args.command == "smoke":
+            from pipeline.smoke import run_pipeline_smoke
             if Path(args.run_dir).exists():
                 raise FileExistsError("Smoke output already exists")
             print("Synthetic harness fixture; no model execution or GPU performance claim.")

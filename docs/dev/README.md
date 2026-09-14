@@ -1,28 +1,23 @@
-# Development Notes
+# 维护文档
 
-This directory contains design notes, research logs, and architecture rationale.
-These files are useful for maintainers and research planning, but they are not
-part of the stable user-facing documentation path.
+用户从 [README](../../README.md) 和 [快速开始](../quickstart.md) 进入。
+当前行为以 [架构](../architecture.md)、[agent 契约](../agent_contract.md)、
+[验证规则](../verifier.md) 及实现为准。
 
-User-facing docs live one level up:
+## 当前维护入口
 
-- `../quickstart.md`
-- `../architecture.md`
-- `../tree_adapter.md`
-- `../sensing.md`
-- `../verifier.md`
-- `../agent_entry.md`
-- `../agent_contract.md`
+- [发布检查](open_source_readiness.md)：库发布、资源需求和后续验证。
+- [分支与工作目录](worktree-map.md)：产品与两个独立 benchmark 的边界。
+- [整理审查](cleanup-review.md)：2026-09-14 的整理结果、保留边界和验证记录。
+- [运行交互指标](run_interaction_metrics.md)：报告指标的设计背景；字段及输出以当前实现为准。
 
-Current development notes:
+## 历史设计与调研
 
-- `tree_planner_consensus.md`: historical design consensus for the tree planner
-- `planner_v1.md`: planner background and early design framing
-- `agentic_optimization_lessons.md`: external agent orchestration lessons mapped to this runtime
-- `run_interaction_metrics.md`: run viewer and interaction metric semantics
-- `symphony_agent_runtime_gap_report.md`: Codex app-server / Symphony runtime gap analysis
-- `open_source_readiness.md`: maintainer checklist for public release readiness
+以下文档保留设计依据，不作为当前功能清单或运行指南。
 
-Keep new files here when they explain why the system is designed a certain way,
-what tradeoffs were considered, or how future research should be framed. Put
-stable how-to material in the user docs instead.
+- [早期 planner 设计](planner_v1.md)
+- [tree planner 历史共识](tree_planner_consensus.md)
+- [agent 优化经验调研](agentic_optimization_lessons.md)
+- [Symphony / app-server 差距分析](symphony_agent_runtime_gap_report.md)
+
+新增稳定用法应合并到对应用户文档；研究记录不要重复定义产品状态或验收入口。

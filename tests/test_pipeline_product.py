@@ -13,7 +13,8 @@ import unittest
 
 from autopipeline.cli import main
 from autopipeline.project import initialize
-from pipeline.task import PipelineSpec, create_pipeline_smoke_fixture
+from pipeline.task import PipelineSpec
+from pipeline.smoke import create_pipeline_smoke_fixture
 
 
 class PipelineProductTests(unittest.TestCase):

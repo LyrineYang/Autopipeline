@@ -255,14 +255,15 @@ Today the shipped task surfaces are:
 - AutoKernel-compatible extracted-kernel optimization through
   `autopipeline tree run`
 - KernelBench problem optimization through [kernelbench/tree_run.py](../kernelbench/tree_run.py)
-- generic pipeline workspace optimization through [pipeline/bridge.py](../pipeline/bridge.py)
+- generic pipeline workspace optimization through `autopipeline pipeline`;
+  [pipeline/bridge.py](../pipeline/bridge.py) is a compatibility entrypoint
 
 The remaining boundary is narrower:
 
 - the AutoKernel-compatible task still edits `kernel.py` inside a branch sandbox
-- the pipeline task is spec-driven and generic; it can evaluate a declared
-  workspace and metrics contract, but it is not a production pipeline profiler,
-  trace analyzer, cross-kernel editor, fusion engine, or layout-propagation
-  engine
+- the pipeline task evaluates a declared workspace and metrics contract; its
+  native PyTorch evaluator measures correctness and latency and records torch
+  profiler evidence. Automatic trace diagnosis, fusion planning, and
+  layout-propagation engines are not implemented
 - the framework is not a long-running issue-tracker daemon
 - in-flight subprocesses are not resumed after process exit, though each command has timeout, cancellation, activity, and diagnostic handling
