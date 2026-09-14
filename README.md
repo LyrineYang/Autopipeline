@@ -1,180 +1,158 @@
 # AutoPipeline
 
-**把模型实现交给 agent，在固定评测下反复修改、验证和选择，交付可复查的候选代码。**
+**让 coding agent 迭代优化 PyTorch 实现，用固定评测选择候选，交付可重新验证的代码。**
 
-AutoPipeline 面向 PyTorch 推理和组合模型 pipeline 的实现优化：给定硬件、
-模型、输入与预算，让 agent 尝试改进实现，用实际运行结果决定是否保留。
-它基于 [AutoKernel](https://github.com/RightNow-AI/autokernel) 扩展，保留原有
-单 kernel 工作流，并提供覆盖整个模型实现的 pipeline 优化入口。
+AutoPipeline 面向模型推理与组合 pipeline 的计算优化。你提供参考实现、输入、
+目标设备和调用预算；agent 修改候选代码，工具执行数值校验、计时和 profiler，
+再决定保留或拒绝。最终得到候选源码、运行报告和可独立复验的导出包。
 
-输入是参考代码、工作负载和执行预算；输出是候选代码、数值校验、计时、
-profiler、运行报告与可重新验证的导出包。优化不保证提速；没有改进也是明确结果。
+基于 [AutoKernel](https://github.com/RightNow-AI/autokernel) 扩展，既能优化整个
+模型实现，也保留原有单 kernel 工作流。**当前为 alpha 产品**：CPU 安装和评估
+流程已验证；真实 agent 的优化表现、目标 CUDA 环境与加速收益仍需实测。
 
-## 工作原理
+[开始使用](#快速开始) · [使用指南](docs/quickstart.md) · [模型案例](examples/README.md) ·
+[结果与排错](docs/quickstart.md#结果与排错) · [架构](docs/architecture.md)
+
+## 你可以用它做什么
+
+| 目标 | 输入 | 推荐入口 |
+| --- | --- | --- |
+| 跑通安装、评估和导出 | Python、PyTorch，无需权重或 agent 账号 | 内置 `residual-mlp` |
+| 优化注意力与多算子组合 | 固定形状、dtype 和设备 | 内置 `attention` |
+| 优化已有模型的计算实现 | 自己的模型代码、权重和代表性输入 | `init --source` |
+| 优化本地编码器的前向与池化 | 本地 Transformers 编码器目录 | `hf-local` |
+| 优化抽取出的 GPU kernel | AutoKernel 源码工作区、NVIDIA GPU | [兼容工作流](docs/quickstart.md#original-autokernel-path) |
+
+内置 evaluator 测量模型 `forward()` 的延迟，包括主机调度和设备同步，
+不包含模型加载、输入构造、分词、网络或完整线上服务延迟。流式协议及其他
+执行方式可接自定义 evaluator，不能把 forward 结果当作线上服务的整体收益。
+
+## 工作方式
 
 ```text
-参考模型 + 固定输入
-        ↓
-建立基线，测量并生成 profiler
-        ↓
-agent 修改候选 → 执行评测 → 数值/性能判定 → 保留或拒绝
-        ↑                         │
-        └────── 在预算内继续 ──────┘
-        ↓
-独立的最终验证 → 报告 → 导出代码
+参考实现 + 输入 + 设备与预算
+              ↓
+     数值检查、基线计时、profiler
+              ↓
+候选修改 → 评估 → 保留或拒绝 → 在预算内继续
+              ↓
+     最终复验 → 报告 → 导出源码
 ```
 
-- **固定评测**：参考实现、输入生成与评测器不属于默认可编辑范围。
-- **真实测量**：执行模型计算，记录延迟样本和算子 profiler；不用公式模拟性能。
-- **可控运行**：限定轮数、候选数、agent 调用数和超时；单 GPU 默认串行测量。
-- **可追溯结果**：冻结每次运行的参考文件，保留失败日志、候选和验证记录。
-- **统一引擎**：组合模型、单 kernel 和外部 benchmark 通过 task/evaluator 接口复用优化流程。
+- **固定比较条件**：默认仅允许修改 `candidate.py`；参考、输入与评测配置固定。
+- **实际执行**：多组种子检查输出，记录延迟样本与算子 profiler。
+- **限制成本**：配置轮数、分支数、调用数及超时；当前原生 pipeline 串行测量。
+- **保留证据**：运行参考快照、候选、失败日志和最终复验结果留在各自运行目录。
 
-## 适合哪些场景
+优化不保证提速。未找到更好实现时保留已验证的基线；报告会区别“评估通过”、
+“找到改进”和“未找到改进”，不会把成功退出等同于加速。
 
-| 场景 | 提供什么 | 从哪里开始 |
-| --- | --- | --- |
-| 第一次检查产品是否能运行 | Python + PyTorch，无需模型权重 | `residual-mlp` 案例 |
-| 优化注意力或多算子组合实现 | 固定形状、dtype、目标设备 | `attention` 案例 |
-| 优化已有模型或业务 pipeline 的计算部分 | 自己的模型代码、权重和代表性输入 | `init --source` |
-| 优化本地预训练编码器的前向计算和池化 | 本地 Transformers 模型目录 | `hf-local` 案例 |
-| 比较优化 agent / 搜索策略 | 独立 benchmark 的固定题目与评测协议 | 通用 evaluator 接口；Level 5 独立维护 |
-| 只优化抽取出的 GPU kernel | AutoKernel 源码工作区与 NVIDIA GPU | [原有 profile/extract/tree 流程](docs/quickstart.md#original-autokernel-path) |
+## 快速开始
 
-当前内置评测器测量 **模型 forward，包括主机调度和设备同步**，不包含模型加载、
-输入准备、网络请求或完整线上服务延迟。流式协议、多机调度等工作负载使用自定义 evaluator。
-
-## 快速开始：不需要服务器，也不下载模型
-
-要求 Python 3.10+。目前从源码安装，尚未发布到 PyPI；推荐独立虚拟环境。
-以下命令在仓库根目录执行：
+要求 Python 3.10+，建议在独立虚拟环境使用。**发布准备阶段请使用维护者提供的、
+包含本页的源码包或 wheel；尚未提供 PyPI 安装路径。** 以下命令从源码根目录开始，
+安装依赖可能联网，但案例本身不下载权重、不调用 agent 服务。
 
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install '.[cpu]'
+autopipeline --version
 
-autopipeline pipeline examples
 autopipeline pipeline init workspace/demo --example residual-mlp --device cpu
 autopipeline pipeline check --spec workspace/demo/pipeline.json
 autopipeline pipeline evaluate --spec workspace/demo/pipeline.json --run-dir workspace/demo/runs/baseline
 autopipeline report workspace/demo/runs/baseline
 ```
 
-打开 `workspace/demo/runs/baseline/view/dashboard.html` 查看结果。
-这会执行真实的 PyTorch 小模型，但使用随机初始化权重；它用于检查计算和产品流程，
-不代表预训练模型的业务效果，也不证明 GPU 优化收益。
+看到 `Status: verified` 表示这次候选通过最终评估。打开
+`workspace/demo/runs/baseline/view/dashboard.html` 查看报告，或直接阅读同目录的
+`summary.md`。初始候选与参考相同，因此这里验证的是产品流程，不是优化收益。
 
-只想检查配置、不安装 PyTorch：`python -m pip install .`，然后使用
-`pipeline check --spec ... --no-runtime`。安装 wheel 后，pipeline 命令可以在源码目录之外使用。
-
-## 在服务器上开始优化
-
-先准备与 NVIDIA 驱动兼容的 CUDA PyTorch 环境。仓库的 uv 配置在 Linux 上选择
-CUDA 12.8 wheel；可使用 `uv sync --extra gpu`。已有受管理 PyTorch 环境时，
-安装本产品及缺少的依赖即可，不必替换服务器原有环境。
+继续导出并重新验证：
 
 ```sh
-autopipeline pipeline init workspace/gpu-demo --example attention --device cuda
-autopipeline pipeline check --spec workspace/gpu-demo/pipeline.json
-autopipeline pipeline evaluate --spec workspace/gpu-demo/pipeline.json --run-dir workspace/gpu-demo/runs/baseline
-
-# 在同一台执行机器上安装并登录 Codex CLI，再调用优化 agent
-autopipeline pipeline run --spec workspace/gpu-demo/pipeline.json \
-  --run-dir workspace/gpu-demo/runs/search \
-  --executor-backend codex-app-server \
-  --max-rounds 3 --children-per-expansion 2 --max-agent-calls 12
-
-autopipeline report workspace/gpu-demo/runs/search
-autopipeline pipeline export workspace/gpu-demo/runs/search --output-dir workspace/selected
+autopipeline pipeline export workspace/demo/runs/baseline --output-dir workspace/demo-export
+autopipeline pipeline evaluate --spec workspace/demo-export/pipeline.json \
+  --candidate workspace/demo-export/candidate --run-dir workspace/demo-export/runs/recheck
 ```
 
-`init`、`check`、`evaluate` 不调用模型服务。`run` 调用你配置的 agent，可能消耗
-API 或订阅额度；调用次数限制不是美元金额上限。未配置 executor 会明确报错。
-默认 planner/reflector 使用本地策略，也可分别配置模型后端。其他 coding agent
-通过 `--executor-command` 接入，见 [运行协议](docs/agent_contract.md)。
+目录已存在时请换新名称，工具不会覆盖旧结果。只有 wheel、已有 PyTorch 或需要
+纯配置检查时，参见[安装方式](docs/quickstart.md#安装方式)。
 
-CUDA 不可用时不会偷偷切换到 CPU。每次运行使用新目录，不覆盖之前的结果。
+## 让 agent 开始优化
 
-## 案例与模型资源
+**CPU 也可以先验证真实 agent 闭环，无需等待 GPU 服务器。** 在执行机器上按
+[Codex CLI 官方说明](https://learn.chatgpt.com/docs/codex/cli)安装，并完成
+[登录](https://learn.chatgpt.com/docs/auth)。然后接着上面的 CPU 工作负载运行：
 
 ```sh
-# 无需下载：注意力 → 残差 → MLP
+autopipeline pipeline run --spec workspace/demo/pipeline.json \
+  --run-dir workspace/demo/runs/search \
+  --executor-backend codex-app-server \
+  --max-rounds 1 --children-per-expansion 1 --beam-width 1 \
+  --max-agent-calls 2 --max-probe-calls 2
+autopipeline report workspace/demo/runs/search
+```
+
+`init`、`check`、`evaluate` 不调用模型服务；`run` 会使用已配置的 agent 额度。
+调用次数限制不是金额上限。以上只给 executor 配置模型，planner/reflector
+使用本地策略。其他 agent 通过 `--executor-command` 接入，见[使用指南](docs/quickstart.md#配置-agent)。
+
+在 NVIDIA 服务器上，先准备兼容驱动的 CUDA PyTorch，创建一个新的
+`--device cuda` 工作负载，再执行相同的 check → evaluate → run 流程。
+设备不可用会明确失败，不会自动切回 CPU。详见[首次服务器使用](docs/quickstart.md#首次服务器使用)。
+
+## 换成你的模型
+
+```sh
+# 查看所有内置案例及资源要求
+autopipeline pipeline examples
+
+# 注意力 → 残差 → MLP：随机初始化，无需权重下载
 autopipeline pipeline init workspace/attention --example attention --device cpu
 
-# 使用自己的代码：源目录包含 reference.py，可选 candidate.py
-autopipeline pipeline init workspace/custom --source /path/to/my-workload --device cuda
-
-# 使用已有预训练编码器：安装模型加载依赖，但不自动下载权重
-python -m pip install '.[cpu,models]'
-autopipeline pipeline init workspace/encoder --example hf-local \
-  --model-dir /path/to/local-encoder --device cpu
+# 接入你自己的实现
+autopipeline pipeline init workspace/custom --source /path/to/my-workload --device cpu
 ```
 
-**被优化的模型**与**负责修改代码的 agent 模型**是两个概念：
+自有源码目录至少包含 `reference.py`，提供 `Model`、`get_inputs()` 和可选的
+`get_init_inputs()`；候选提供构造参数和 state_dict 兼容的 `ModelNew`。
+未提供 `candidate.py` 时会生成继承参考模型的初始实现。完整可复制的模型例子见
+[自有模型案例](examples/README.md#4-自己的模型或组合-pipeline)。
 
-| 对象 | 是否需要下载 |
+“被优化的模型”与“修改代码的 agent”分别准备：
+
+| 资源 | 是否需要下载 |
 | --- | --- |
-| 内置 MLP / attention 工作负载 | 不需要；代码和随机初始化参数即可实际计算 |
-| 自己的模型 | 已有代码与权重可以直接接入 |
-| 预训练工作负载 | 需要已有本地权重；没有时才需要另行下载 |
-| Codex 等优化 agent | 本产品连接其服务/CLI，不要求在本地下载 agent 权重 |
+| 内置 MLP / attention | 不需要；随机权重即可执行计算 |
+| 自己的模型或预训练工作负载 | 使用已有本地代码和权重；缺少权重时另行获取 |
+| Codex 等 coding agent | 连接其 CLI/服务，不要求本地下载 agent 权重 |
 
-`hf-local` 使用本地文件加载，不联网补齐缺失权重，也不运行 Hub 上的自定义代码。
-初始化时记录模型文件哈希；之后权重变动会在检查阶段报错。模型文件留在外部目录，
-不会为每个候选重复复制。导出后需要保留相同资源，迁移路径的方法见案例文档。
+`hf-local` 加载已有本地编码器，不联网补齐权重，也不执行 Hub 自定义代码。
+模型资产哈希用于固定比较版本；导出不复制大模型，迁移时需要相同权重。
+具体准备、输入范围和迁移步骤见[本地编码器案例](examples/README.md#3-本地预训练编码器已有权重直接接入)。
 
-[完整案例：适用场景、输入输出、下载准备与验收命令](examples/README.md)。
+## 能力边界与 benchmark
 
-## 接入自己的模型
+- 这是开发工具；候选代码在调用者环境中执行，复制工作区不等于操作系统沙箱。
+- 导出用于代码集成，不会自动部署推理服务；目前不支持完整搜索调度状态的断点恢复。
+- CPU 案例不证明 CUDA 兼容性、预训练模型业务质量或真实 agent 的优化收益。
+- Level 5 与 apimetric 独立维护题目、评分及实验统计，不是产品内置案例。
+  Level 5 是项目定义的 benchmark 扩展，非上游 KernelBench 官方级别；独立 harness
+  仍需适配产品接口，不能宣称已跑通。产品自己的预算日志继续保留。
 
-```text
-my-workload/
-├── reference.py   # Model、get_inputs()、可选 get_init_inputs()
-└── candidate.py   # ModelNew；未提供时自动生成继承参考模型的初始实现
-```
+## 文档与贡献
 
-候选保留相同构造参数和 state_dict 接口。输入可以是位置参数列表或关键字字典；
-输出可以是 tensor 或嵌套容器。评测器跨多个输入种子检查完整输出，拒绝非有限数、
-结构/dtype 变化及超出容差的结果。浮点容差、warmup 和计时次数由固定配置指定。
-组合模型可以封装在一个 `forward()` 中；其他框架或流式任务可提供自己的命令评测器。
+| 我想做什么 | 文档 |
+| --- | --- |
+| 安装、运行、读报告、导出与排错 | [使用指南](docs/quickstart.md) |
+| 选择工作负载、准备权重、接入自己的模型 | [案例](examples/README.md) |
+| 理解实现与评测判定 | [架构](docs/architecture.md) · [验证规则](docs/verifier.md) |
+| 接入 coding agent | [Agent 入口](docs/agent_entry.md) · [运行契约](docs/agent_contract.md) |
+| 提交问题、修改代码、准备发布 | [贡献指南](CONTRIBUTING.md) · [发布检查](docs/dev/open_source_readiness.md) |
 
-接口、可编辑范围、计时定义、导出重测与错误排查见 [详细使用指南](docs/quickstart.md)。
+问题反馈请附版本、执行命令、设备/依赖环境和脱敏后的失败日志；安全问题按
+[安全说明](SECURITY.md)私下报告。更多资料见[文档索引](docs/index.md)。
 
-## AutoPipeline 与独立 benchmark
-
-- **产品主线 `main`**：CLI、优化 agent、通用任务接口、执行验证、预算、报告和导出。
-- **Level 5**：独立 benchmark 开发线，负责题目、工作负载、基线、正确性和评分协议。
-- **apimetric**：独立 benchmark 统计开发线，负责 benchmark 侧的调用量、耗时与成本记录。
-
-Level 5 和 apimetric 不合并进产品核心。产品自身的运行预算/使用量日志仍保留，
-它们与 benchmark 对实验的统计属于不同职责。Level 5 是本项目定义的扩展，
-不是 upstream KernelBench 官方级别。目前其独立 harness 还需对接产品的工作区接口；
-不能把内置示例视为已经跑通 Level 5。
-
-[层次与适配边界](docs/architecture.md) · [本地分支与工作目录](docs/dev/worktree-map.md)
-
-## 当前状态与下一步
-
-这是可安装的 alpha 产品。CPU 数值/执行测试、真实 profiler、候选导出和安装包验证
-已经建立；尚未作出目标 GPU 上的兼容性、优化成功率或加速比承诺。
-当前不支持完整搜索调度状态的断点恢复，也不负责自动部署服务。
-
-接下来的验证按会影响产品决策的顺序进行：
-
-1. **无服务器时继续完成**：案例与本地模型接入、安装包回归，以及独立 benchmark 的
-   工作区适配。Level 5 和 apimetric 的修改留在各自开发线。
-2. **有一张可用 NVIDIA GPU 后**：先跑无需下载的案例，检查 CUDA、数值和 profiler；
-   再让已登录的 agent 运行一轮，确认真实编辑、评测和失败恢复路径。
-3. **选定业务负载后**：固定权重、输入与优化预算，重复比较基线和候选，再决定扩大
-   搜索预算或改变优化策略。需要你的核心选择是目标负载和可接受的资源预算。
-
-无需为了第一轮环境验收先准备大模型、多 GPU 或完整业务数据。
-
-## 文档与开发
-
-[使用指南](docs/quickstart.md) · [案例](examples/README.md) · [架构](docs/architecture.md) ·
-[Agent 入口](docs/agent_entry.md) · [贡献指南](CONTRIBUTING.md) · [更新记录](CHANGELOG.md) · [安全说明](SECURITY.md)
-
-AutoPipeline 保留 AutoKernel 的 MIT 许可和来源信息；上游作为实现基础与参考，
-产品开发与发布面向自己的仓库。
+采用 [MIT 许可](LICENSE)，保留 AutoKernel 的来源与版权信息。

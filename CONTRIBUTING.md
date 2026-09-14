@@ -1,8 +1,8 @@
 # Contributing
 
-AutoPipeline is an independent project built from AutoKernel. It is moving from
-a single-kernel agent workspace toward a task-agnostic tree runtime for kernel
-and pipeline optimization.
+AutoPipeline is an independent project built from AutoKernel. The alpha product provides
+an installable pipeline workflow backed by a task-agnostic tree runtime, while
+retaining the source-based kernel tools.
 
 ## Agent-Led Engineering
 

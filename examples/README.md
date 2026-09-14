@@ -1,7 +1,9 @@
 # 使用案例
 
 案例与运行引擎一起打进 wheel。先运行 `autopipeline pipeline examples` 查看清单，
-无需手动寻找源码或下载附件。以下命令在已安装 AutoPipeline 的环境执行。
+无需手动寻找源码或下载附件。以下命令在[已安装 AutoPipeline](../docs/quickstart.md#安装方式)的环境执行。
+每个案例使用独立目录，重复执行时请换名称；baseline 不调用 agent。
+MLP、attention 和自有模型可以先在 CPU 上完成评估与 agent 闭环。
 
 ## 1. 组合 MLP：安装和完整流程检查
 
@@ -23,14 +25,15 @@ GPU 环境创建另一个 `--device cuda` 工作区。不要把 CPU/GPU 的结�
 输入为 `[2, 64, 128]`，模型是无需权重下载的小型 Transformer block。
 
 ```sh
-autopipeline pipeline init workspace/attention --example attention --device cuda
+autopipeline pipeline init workspace/attention --example attention --device cpu
 autopipeline pipeline evaluate --spec workspace/attention/pipeline.json --run-dir workspace/attention/runs/baseline
 autopipeline pipeline run --spec workspace/attention/pipeline.json \
   --run-dir workspace/attention/runs/search --executor-backend codex-app-server \
   --max-rounds 1 --children-per-expansion 1 --max-agent-calls 2
 ```
 
-候选可以在 `candidate.py` 中重写整个 `forward()`，不局限于一个抽取的 kernel。
+上述 run 需要[已认证的 agent](../docs/quickstart.md#配置-agent)，会使用服务额度。
+GPU 验证时重新创建 `--device cuda` 工作区。候选可以在 `candidate.py` 中重写整个 `forward()`，不局限于一个抽取的 kernel。
 第一次验收先确认 agent 确实修改了代码且评测完成；没有提速不能等同于产品失败。
 随后再增加预算、输入规模或切换到业务工作负载。
 
@@ -41,7 +44,7 @@ pooling 的计算。此案例不包含文本分词、网络、向量数据库或
 它检查与原实现等价，不评估语义检索质量。初始输入是固定形状的随机 token；
 业务验证时应由自己的 reference.py 提供代表性 token 输入。
 
-资源准备：安装 `models` extra。模型目录至少包含 `config.json` 与 safetensors
+资源准备：安装 `models` extra；wheel 用户见[安装方式](../docs/quickstart.md#安装方式)。模型目录至少包含 `config.json` 与 safetensors
 或 PyTorch 权重文件。已有模型可由 Transformers 的 `save_pretrained()` 导出。
 没有权重时，可以自行选择模型、确认许可和资源预算后下载。例如下面是可选操作，
 不属于 `pipeline init` 的隐式行为：
@@ -86,7 +89,8 @@ autopipeline pipeline export workspace/encoder/runs/baseline --output-dir worksp
 
 ## 4. 自己的模型或组合 pipeline
 
-创建一个小目录，把自己的模型接到这个接口：
+创建 `/path/to/my-workload` 这样的独立目录，将下面代码保存为 `reference.py`。
+它是可执行的接口示例；接入业务模型时替换模型与输入生成，不改变接口约定：
 
 ```python
 # reference.py
@@ -107,7 +111,9 @@ def get_inputs():
 ```
 
 ```sh
-autopipeline pipeline init workspace/custom --source /path/to/my-workload --device cuda
+autopipeline pipeline init workspace/custom --source /path/to/my-workload --device cpu
+autopipeline pipeline check --spec workspace/custom/pipeline.json
+autopipeline pipeline evaluate --spec workspace/custom/pipeline.json --run-dir workspace/custom/runs/baseline
 ```
 
 这个接口可以包裹实际模型和多阶段 tensor 计算。固定参考代码负责模型权重加载、
