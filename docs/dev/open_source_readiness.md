@@ -6,7 +6,7 @@
 
 ## 当前可交付范围
 
-产品版本为 `1.4.0a3`，原生入口是 `autopipeline pipeline`。
+产品版本为 `1.4.0a4`，原生入口是 `autopipeline pipeline`。
 安装 wheel 后可以在源码目录之外初始化、检查、评估和导出工作负载。
 `tree`、`profile`、`extract` 等历史命令仍有源码检出依赖，不能据此宣称所有
 兼容命令都已经独立打包。Level 5 和 apimetric 是独立 benchmark 开发线。

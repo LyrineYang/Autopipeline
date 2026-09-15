@@ -1,6 +1,6 @@
 [project]
 name = "auto-pipeline"
-version = "1.4.0a3"
+version = "1.4.0a4"
 description = "Agent-first pipeline and GPU kernel optimization toolkit"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -23,7 +23,7 @@ autopipeline pipeline examples
 如果已有匹配的 PyTorch 环境，可去掉 extra，仅安装基础包。
 
 ```sh
-python -m pip install '/path/to/auto_pipeline-1.4.0a3-py3-none-any.whl[cpu]'
+python -m pip install '/path/to/auto_pipeline-1.4.0a4-py3-none-any.whl[cpu]'
 autopipeline --version
 ```
 
@@ -150,19 +150,8 @@ autopipeline report my-pipeline/runs/search
 原生 pipeline 当前只允许串行分支测量。确认一次完整编辑和复验成功后，再逐步
 增加轮数、候选数量或工作负载规模；不因没有提速直接加大预算。
 
-### 其他 coding agent
-
-用 `--executor-command 'YOUR_COMMAND'` 替换 executor backend。命令在候选工作区
-运行，读取 TREE_PROMPT_PATH / TREE_PAYLOAD_PATH，修改声明的文件，并把结果 JSON
-写到 TREE_OUTPUT_PATH，例如：
-
-```json
-{"status":"completed","changed":true,"summary":"说明实际实现改动"}
-```
-
-JSON 是协议输出，不是正确性证据；工具仍独立执行评测。使用能够访问已安装库
-的解释器，认证由外部命令负责。完整协议见[Agent Contract](agent_contract.md)。
-`pipeline smoke` 是合成控制流程检查，不替代这里的真实模型执行。
+其他 coding agent 可通过命令接入；协议实现见[开发者入口](dev/README.md#接入其他-coding-agent)。
+正常使用内置后端无需了解内部消息格式。
 
 ## 结果与排错
 
@@ -248,16 +237,5 @@ autopipeline pipeline evaluate --spec gpu-pipeline/pipeline.json --run-dir gpu-p
 
 ## Original AutoKernel path
 
-以下仅在源码根目录、具备 GPU 依赖与 agent 认证时使用：
-
-```sh
-uv run autopipeline prepare
-uv run autopipeline profile --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
-uv run autopipeline extract --top 1
-uv run autopipeline tree run --kernel-file workspace/kernel_matmul_1.py \
-  --beam-width 1 --max-rounds 1 --children-per-expansion 1 \
-  --bench-arg=--quick --executor-backend codex-app-server
-```
-
-原生 pipeline 不要求先 profile/extract：它的编辑范围是提供的模型实现；旧流程
-编辑抽取出的 kernel。更多兼容入口说明见 [Tree Adapter](tree_adapter.md)。
+原有单 kernel 工具仍受支持，入口已集中到[开发与兼容工具指南](dev/README.md#兼容工具)。
+普通 pipeline 使用不需要先执行 profile/extract。

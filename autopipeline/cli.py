@@ -18,33 +18,38 @@ COMMANDS = {
 
 
 HELP = """\
-AutoPipeline command line
+AutoPipeline — optimize and verify model implementations
 
-Usage:
-  autopipeline --version
-  autopipeline pipeline examples
-  autopipeline doctor [--no-gpu] [--json]
-  autopipeline pipeline init DIRECTORY [--source WORKSPACE] [--device cuda|cpu]
+Workflow:
+  autopipeline pipeline examples                 Choose a workload
+  autopipeline pipeline init DIRECTORY --device cpu
   autopipeline pipeline check --spec DIRECTORY/pipeline.json
   autopipeline pipeline evaluate --spec DIRECTORY/pipeline.json
   autopipeline pipeline run --spec DIRECTORY/pipeline.json --executor-backend codex-app-server
+  autopipeline report RUN_DIR                    View results
   autopipeline pipeline export RUN_DIR --output-dir DIRECTORY
+
+Help:
+  autopipeline pipeline --help                   Workload commands
+  autopipeline pipeline COMMAND --help           Command options
+  autopipeline --version                         Installed version
+  autopipeline --help-all                        Developer and compatibility tools
+"""
+
+DEVELOPER_HELP = """\
+Developer and compatibility tools:
+  autopipeline doctor [--no-gpu] [--json]          Environment diagnostics
+  autopipeline pipeline --help-all               Spec utilities and synthetic smoke
+  autopipeline tree run [args...]                Extracted-kernel search
   autopipeline prepare [args...]
   autopipeline profile [args...]
   autopipeline extract [args...]
-  autopipeline tree run [args...]
-  autopipeline report [args...]
   autopipeline bench [args...]
   autopipeline verify [args...]
 
-Primary flow:
-  autopipeline pipeline init my-pipeline --example residual-mlp --device cpu
-  autopipeline pipeline check --spec my-pipeline/pipeline.json
-  autopipeline pipeline evaluate --spec my-pipeline/pipeline.json --run-dir my-pipeline/runs/baseline
-  autopipeline pipeline run --spec my-pipeline/pipeline.json --executor-backend codex-app-server
-
-Compatibility:
-  Existing top-level scripts still work, but new user docs should prefer this CLI.
+Kernel compatibility tools require a source checkout and GPU dependencies.
+Existing commands and top-level scripts remain supported.
+Developer guide: docs/dev/README.md
 """
 
 
@@ -199,6 +204,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args or args[0] in {"-h", "--help"}:
         print(HELP)
+        return 0
+
+    if args == ["--help-all"]:
+        print(HELP + "\n" + DEVELOPER_HELP)
         return 0
 
     command = args[0]

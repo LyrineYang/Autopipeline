@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### User and developer entrypoints (1.4.0a4)
+
+- Default CLI help now presents the product workflow; `--help-all` exposes
+  developer utilities and source-based compatibility commands.
+- Separated user navigation from agent protocols, benchmark integration,
+  compatibility tooling and maintainer documentation. Existing commands and
+  design documents remain available.
+
 ### Product cleanup (1.4.0a3)
 
 - Unified the installed report command and legacy script, including diagnostics

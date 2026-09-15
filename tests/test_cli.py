@@ -76,9 +76,26 @@ class AutoPipelineCliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertIn("autopipeline doctor", stdout)
-        self.assertIn("autopipeline tree run", stdout)
-        self.assertIn("Existing top-level scripts still work", stdout)
+        self.assertIn("autopipeline pipeline init", stdout)
+        self.assertIn("autopipeline report", stdout)
+        self.assertIn("autopipeline --help-all", stdout)
+        self.assertNotIn("autopipeline tree run", stdout)
+        self.assertNotIn("autopipeline prepare", stdout)
+
+    def test_developer_tools_remain_discoverable_without_polluting_workload_help(self):
+        code, output, _ = self._run("--help-all")
+        self.assertEqual(code, 0)
+        self.assertIn("autopipeline tree run", output)
+        self.assertIn("autopipeline doctor", output)
+        code, output, _ = self._run("pipeline", "--help")
+        self.assertEqual(code, 0)
+        self.assertIn("evaluate", output)
+        self.assertNotIn("smoke", output)
+        self.assertNotIn("setup", output)
+        code, output, _ = self._run("pipeline", "--help-all")
+        self.assertEqual(code, 0)
+        self.assertIn("smoke", output)
+        self.assertIn("setup", output)
 
     def test_tree_help_does_not_require_gpu_or_workspace(self) -> None:
         code, stdout, stderr = self._run("tree", "--help")

@@ -24,6 +24,24 @@ from .project import copy_workspace, initialize, write_json, validate_model_dire
 from .workloads import EXAMPLES
 
 
+WORKLOAD_HELP = """\
+AutoPipeline workload commands
+
+  examples                          List workloads and required resources
+  init DIRECTORY --device cpu       Create a workload
+  check --spec FILE                 Check configuration and device
+  evaluate --spec FILE              Evaluate without an agent
+  run --spec FILE                   Optimize with your configured agent
+  export RUN_DIR --output-dir DIR   Export verified code
+
+Start with init, check, and evaluate; run requires an agent backend.
+View results with: autopipeline report RUN_DIR
+
+Options: autopipeline pipeline COMMAND --help
+Developer utilities: autopipeline pipeline --help-all
+"""
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="autopipeline pipeline", description="Create, validate, optimize, and export real inference workloads.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -272,8 +290,15 @@ def export_run(run_dir: Path, destination: Path) -> None:
 
 
 def main(argv=None) -> int:
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list in (["--help"], ["-h"]):
+        print(WORKLOAD_HELP)
+        return 0
+    if args_list == ["--help-all"]:
+        build_parser().print_help()
+        return 0
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(args_list)
     try:
         if args.command == "examples":
             for name, description in EXAMPLES.items():

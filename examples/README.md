@@ -122,16 +122,7 @@ autopipeline pipeline evaluate --spec workspace/custom/pipeline.json --run-dir w
 不符合 forward 接口的流式任务使用通用命令 evaluator，不要把其服务行为压缩成
 一个不等价的 toy forward。
 
-## 外部 benchmark：Level 5 / apimetric
+## 扩展到外部 benchmark
 
-它们是独立的测试和统计开发线，不是上述案例的别名，也不作为产品核心的依赖。
-产品接收固定的 workspace、editable_paths 和 evaluate_command；benchmark
-负责题目版本、输入/输出约束、固定基线、评分、统计和自己的模型资源。
-
-当前 Level 5 harness 使用自己的 active workspace，尚需在其开发线上增加可显式
-传入工作区的运行接口，再输出产品验证器所需的数值与性能证据。适配不得改变题目
-或评分规则，也不能仅把 benchmark 的一句 PASS 当成完整数值证据。
-apimetric 保留在 benchmark 侧统计实际实验，不迁移成产品的另一套预算引擎。
-
-接入顺序：先固定单题的离线调用协议；再验证同一题在独立 harness 与产品调用中
-得到一致判定；最后才用 GPU 比较 agent 方法。前两步的接口工作不需要等待服务器。
+实现新的 benchmark 适配器或实验统计，参见[开发者入口](../docs/dev/README.md#外部-benchmark)。
+上述模型案例使用产品内置接口，不依赖独立 benchmark 开发线。

@@ -11,7 +11,7 @@ AutoPipeline 面向模型推理与组合 pipeline 的计算优化。你提供参
 流程已验证；真实 agent 的优化表现、目标 CUDA 环境与加速收益仍需实测。
 
 [开始使用](#快速开始) · [使用指南](docs/quickstart.md) · [模型案例](examples/README.md) ·
-[结果与排错](docs/quickstart.md#结果与排错) · [架构](docs/architecture.md)
+[结果与排错](docs/quickstart.md#结果与排错)
 
 ## 你可以用它做什么
 
@@ -21,7 +21,6 @@ AutoPipeline 面向模型推理与组合 pipeline 的计算优化。你提供参
 | 优化注意力与多算子组合 | 固定形状、dtype 和设备 | 内置 `attention` |
 | 优化已有模型的计算实现 | 自己的模型代码、权重和代表性输入 | `init --source` |
 | 优化本地编码器的前向与池化 | 本地 Transformers 编码器目录 | `hf-local` |
-| 优化抽取出的 GPU kernel | AutoKernel 源码工作区、NVIDIA GPU | [兼容工作流](docs/quickstart.md#original-autokernel-path) |
 
 内置 evaluator 测量模型 `forward()` 的延迟，包括主机调度和设备同步，
 不包含模型加载、输入构造、分词、网络或完整线上服务延迟。流式协议及其他
@@ -133,26 +132,18 @@ autopipeline pipeline init workspace/custom --source /path/to/my-workload --devi
 模型资产哈希用于固定比较版本；导出不复制大模型，迁移时需要相同权重。
 具体准备、输入范围和迁移步骤见[本地编码器案例](examples/README.md#3-本地预训练编码器已有权重直接接入)。
 
-## 能力边界与 benchmark
+## 使用边界
 
 - 这是开发工具；候选代码在调用者环境中执行，复制工作区不等于操作系统沙箱。
 - 导出用于代码集成，不会自动部署推理服务；目前不支持完整搜索调度状态的断点恢复。
 - CPU 案例不证明 CUDA 兼容性、预训练模型业务质量或真实 agent 的优化收益。
-- Level 5 与 apimetric 独立维护题目、评分及实验统计，不是产品内置案例。
-  Level 5 是项目定义的 benchmark 扩展，非上游 KernelBench 官方级别；独立 harness
-  仍需适配产品接口，不能宣称已跑通。产品自己的预算日志继续保留。
+## 帮助与反馈
 
-## 文档与贡献
-
-| 我想做什么 | 文档 |
-| --- | --- |
-| 安装、运行、读报告、导出与排错 | [使用指南](docs/quickstart.md) |
-| 选择工作负载、准备权重、接入自己的模型 | [案例](examples/README.md) |
-| 理解实现与评测判定 | [架构](docs/architecture.md) · [验证规则](docs/verifier.md) |
-| 接入 coding agent | [Agent 入口](docs/agent_entry.md) · [运行契约](docs/agent_contract.md) |
-| 提交问题、修改代码、准备发布 | [贡献指南](CONTRIBUTING.md) · [发布检查](docs/dev/open_source_readiness.md) |
+[使用指南](docs/quickstart.md) · [案例](examples/README.md) · [文档导航](docs/index.md)
 
 问题反馈请附版本、执行命令、设备/依赖环境和脱敏后的失败日志；安全问题按
-[安全说明](SECURITY.md)私下报告。更多资料见[文档索引](docs/index.md)。
+[安全说明](SECURITY.md)私下报告。
+
+扩展 agent、接入 benchmark 或参与源码开发，请进入[开发者入口](docs/dev/README.md)。
 
 采用 [MIT 许可](LICENSE)，保留 AutoKernel 的来源与版权信息。
