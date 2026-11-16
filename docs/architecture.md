@@ -23,11 +23,10 @@ measures synchronized forward latency, and writes torch profiler artifacts.
 adapts that contract to the existing tree engine and enforces protected files.
 The evaluator executes outside the editable workload's source files.
 
-The product and benchmark development lines stay separate. Level 5 owns its
-task definitions, reference baselines and scoring policy. apimetric owns
-benchmark-side measurement and experiment accounting. Neither is merged into
-the product runtime. The product's own budget ledger records its execution;
-an external benchmark can independently measure the same run.
+The `research/level5` branch holds the Level 5 task definitions, reference
+baselines and scoring policy, along with apimetric benchmark instrumentation.
+The product budget ledger records its own execution. The benchmark can
+independently measure the same run.
 
 The current research stage is pipeline co-optimization in a fixed hardware and
 workload setting. That means the framework should help an agent optimize the

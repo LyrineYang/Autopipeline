@@ -1,41 +1,30 @@
 # 产品与 benchmark 工作目录
 
-更新：2026-09-17。当前有 **5 个 worktree**：3 个长期工作目录及 2 个临时 detached 检出；它们是并列目录。
+更新于 2026-11-16。AutoPipeline 有两个日常工作树。
 
 | 分支 | 职责 | 目录 |
 | --- | --- | --- |
-| `main` | CLI、通用优化/验证、预算、案例、报告与导出 | `/Users/nianzhen/Desktop/autopipeline` |
-| `codex/level5` | 独立 benchmark：题目、组合工作负载、基线与评分 | `/Users/nianzhen/.codex/worktrees/4f0c/autokernel` |
-| `codex/apimetric` | 独立 benchmark：调用量、耗时、成本与实验统计 | `/Users/nianzhen/.codex/worktrees/112d/autokernel` |
+| `main` | CLI、通用优化与验证、预算、案例、报告、导出 | `/Users/nianzhen/Desktop/autopipeline` |
+| `research/level5` | Level 5 的语音、文档、图像题目，固定基线和实验统计 | `/Users/nianzhen/.codex/worktrees/4f0c/autokernel` |
 
-Level 5 和 apimetric 不合入产品 main；原有未提交工作保持独立。
-产品预算账本用于约束运行，不能替代 benchmark 的实验统计。
+`research/level5` 合并了原 `codex/level5` 和 `codex/apimetric`。合并提交的
+两个父提交分别保存原实验代码。产品预算约束运行，benchmark 记录每轮结果和用量。
+旧 benchmark 的运行目录和锁文件归档在
+`workspace/worktree-retirement-20261116/`。
 
-## 迁移后的维护入口
+产品目录原名为 Desktop/autokernel。现有 CPU 验收环境位于
+`workspace/product-test-env/`。迁移验收索引位于
+`workspace/path-migration-20260917/acceptance.json`。
 
-产品目录已迁移至 `/Users/nianzhen/Desktop/autopipeline`。从此目录执行 Git 和
-维护命令；不要继续使用旧的 Desktop/autokernel 路径。2026-09-17 已修复
-所有现存 worktree 的 Git 连接，两个 benchmark 的分支、未提交状态和文件
-哈希保持不变。
+## 2026-11-16 回收记录
 
-另有 `c1c0`、`c343` 两个临时 detached worktree，均位于
-`/Users/nianzhen/.codex/worktrees/<编号>/autokernel`，提交为 `c259b8a`；
-本次只修复连接，未回收目录。
+- `c1c0`、`c343` 曾检出 `c259b8a`，提交已在产品 main 历史中。
+- `5ea4` 曾检出 `04107f4`，这份 KernelBench 流程统计原型可以通过
+  `refs/codex/snapshots/a141ae44d777dff63ae8e7ab9c40910dd3bec847` 恢复。
+- `112d` 的实验代码通过合并提交保留，实验产物已归档。
+- 本地发布准备分支已回收，GitHub 上的分支仍是仓库默认入口。
 
-本地产品环境为 `workspace/product-test-env`，安装现有 `1.4.0a5` wheel。
-在产品根目录启用环境：
-
-```sh
-source workspace/product-test-env/bin/activate
-autopipeline --version
-```
-
-自动审视已改用新产品目录，保持每日 09:30 的执行时间与只读审视范围。
-迁移备份和验证索引位于 `workspace/path-migration-20260917/`；原环境保留在
-`workspace/product-test-env.before-migration-20260917/`。旧验收记录保留原路径，
-迁移后的 CPU 用户流程另存一份记录，不覆盖历史结果。
-
-## 历史目录已回收
+## 2026-09-14 的历史回收记录
 
 最初 8 个旧目录均无未提交源码或独有提交，关联任务未运行。回收使用
 `git worktree remove`，保留全部 Git 提交与任务历史，不删除主线设计文档。
@@ -52,8 +41,7 @@ autopipeline --version
 任务结束后，该干净目录也已回收，共回收 9 个目录。定时任务配置保持不变，
 未来运行可能再次生成 worktree；当时保留的三个目录是上表中的长期工作目录。
 
-旧任务的目录已不存在；继续产品工作应使用当前 main。如果确实需要重现某个
-旧检出，可根据表中的完整提交恢复独立 worktree，例如：
+需要重现旧检出时，从产品目录执行 Git 命令。下例使用表中的提交恢复独立 worktree。
 
 ```sh
 git worktree add --detach /Users/nianzhen/.codex/worktrees/3fc8/autokernel 80b34880d79fb2f62cf2e5d7b2d4ad3b6e9d6ae5

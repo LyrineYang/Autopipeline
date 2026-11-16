@@ -9,7 +9,7 @@
 产品版本为 `1.4.0a5`，原生入口是 `autopipeline pipeline`。
 安装 wheel 后可以在源码目录之外初始化、检查、评估和导出工作负载。
 `tree`、`profile`、`extract` 等历史命令仍有源码检出依赖，不能据此宣称所有
-兼容命令都已经独立打包。Level 5 和 apimetric 是独立 benchmark 开发线。
+兼容命令都已经独立打包。Level 5 题目和 apimetric 实验统计统一在 `research/level5`，与产品 main 分开维护。
 
 已有安装包运行 residual-mlp、attention、hf-local 三个真实 CPU 工作负载的历史记录；
 新增用户流程验收以 `scripts/check_installed_workflow.py` 为入口，实际执行 CPU 模型，
@@ -61,11 +61,10 @@ wheel 仍暴露 `tree`、`pipeline`、`kernelbench`、`kernels`、`models` 等�
 网站上线、benchmark 论文实验和库版本发布分别安排；不将网站构建或完整 GPU
 实验设为所有产品维护工作的前置条件。
 
-## 本次文档发布准备（2026-09-15）
+## 远端发布状态（2026-11-16）
 
-只读检查 origin 得到：默认分支仍是 `codex/open-source-release-prep`，提交
-`c259b8a`，尚无远端 main。因此现在默认克隆不会得到本地 a3 产品。
-README 暂以对应源码包或 wheel 作为入口，不能将远端旧分支当作新用户验收结果。
+GitHub 上的 origin 是私有仓库，默认分支仍为 `codex/open-source-release-prep`。
+远端尚无 `main`。默认克隆不会获得已在本地验证的 a5 产品。
 
 实际发布按这个顺序进行：
 
