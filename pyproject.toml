@@ -1,7 +1,7 @@
 [project]
 name = "auto-pipeline"
-version = "1.4.0a5"
-description = "Agent-first pipeline and GPU kernel optimization toolkit"
+version = "1.4.0a6"
+description = "Tree search for coding agents that optimize and verify PyTorch workloads"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -69,7 +69,7 @@ requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["autopipeline*", "tree*", "kernelbench*", "pipeline*", "kernels*", "models*"]
+include = ["autopipeline*", "pipeline*", "tree*"]
 
 [tool.uv.sources]
 torch = [

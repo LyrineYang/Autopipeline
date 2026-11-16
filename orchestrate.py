@@ -224,27 +224,6 @@ def _append_result_row(kernel_file: str, row: dict) -> None:
         f.write("\t".join(values) + "\n")
 
 
-def _load_result_rows(kernel_file: str) -> list[dict]:
-    """Load all result rows for a kernel. Returns empty list if no file."""
-    path = _kernel_results_path(kernel_file)
-    if not path.exists():
-        return []
-    rows: list[dict] = []
-    with open(path, "r", encoding="utf-8") as f:
-        header_line = f.readline().strip()
-        if not header_line:
-            return []
-        cols = header_line.split("\t")
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split("\t")
-            row = {}
-            for i, col in enumerate(cols):
-                row[col] = parts[i] if i < len(parts) else ""
-            rows.append(row)
-    return rows
 
 
 # ---------------------------------------------------------------------------

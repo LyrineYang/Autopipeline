@@ -29,7 +29,8 @@ autopipeline pipeline init workspace/attention --example attention --device cpu
 autopipeline pipeline evaluate --spec workspace/attention/pipeline.json --run-dir workspace/attention/runs/baseline
 autopipeline pipeline run --spec workspace/attention/pipeline.json \
   --run-dir workspace/attention/runs/search --executor-backend codex-app-server \
-  --max-rounds 1 --children-per-expansion 1 --max-agent-calls 2
+  --max-rounds 2 --beam-width 2 --children-per-expansion 2 \
+  --max-agent-calls 4 --max-probe-calls 4
 ```
 
 上述 run 需要[已认证的 agent](../docs/quickstart.md#配置-agent)，会使用服务额度。

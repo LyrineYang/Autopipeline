@@ -14,7 +14,6 @@ from typing import Any
 
 from .codex_dynamic_tools import run_dynamic_tool, sensing_dynamic_tools
 from .codex_session import (
-    is_codex_app_server_backend,
     load_session,
     persist_agent_session,
     session_path_for,
@@ -23,42 +22,6 @@ from .codex_session import (
 from .types import AgentRoleConfig
 
 
-def run_codex_app_server_executor(
-    command: str | None,
-    *,
-    cwd: Path,
-    prompt: str,
-    payload: dict[str, Any],
-    telemetry: dict[str, Any],
-    logs_dir: Path,
-    role_config: AgentRoleConfig,
-    sensing=None,
-    timeout_seconds: float | None = 600,
-    budget_ledger: Any | None = None,
-    session_key: str | None = None,
-    session_registry_path: Path | None = None,
-    error_cls: type[Exception] = RuntimeError,
-) -> dict[str, Any]:
-    """Run one executor step through `codex app-server` over stdio JSONL."""
-
-    return run_codex_app_server_role(
-        command,
-        cwd=cwd,
-        prompt=prompt,
-        payload=payload,
-        telemetry=telemetry,
-        logs_dir=logs_dir,
-        action="execute",
-        role="executor",
-        role_config=role_config,
-        sensing=sensing,
-        timeout_seconds=timeout_seconds,
-        budget_ledger=budget_ledger,
-        session_key=session_key,
-        session_registry_path=session_registry_path,
-        output_mode="execution_diff",
-        error_cls=error_cls,
-    )
 
 
 def run_codex_app_server_role(

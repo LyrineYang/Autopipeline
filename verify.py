@@ -961,13 +961,6 @@ def _get_gpu_name() -> str:
     return "No GPU"
 
 
-def _output_shape_str(output: Any) -> str:
-    """Get shape string from model output."""
-    try:
-        t = extract_tensor(output)
-        return str(list(t.shape))
-    except Exception:
-        return "unknown"
 
 
 # ---------------------------------------------------------------------------

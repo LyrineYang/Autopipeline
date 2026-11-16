@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from dataclasses import asdict
 from datetime import datetime, timezone
+from itertools import chain, zip_longest
 from pathlib import Path
 import threading
 
@@ -11,8 +12,7 @@ from .agent import AgentAdapter, AgentStepError
 from .archive import RunArchive
 from .branch_engine import BranchEngine
 from .budget import BudgetLedger
-from .codex_session import should_use_codex_app_server
-from .roles import normalize_role_configs, role_config_for
+from .roles import KNOWN_AGENT_ROLES, normalize_role_configs, role_uses_agent
 from .task import OptimizationTask, validate_sandbox_backend
 from .types import (
     ExecutionResult,
@@ -100,8 +100,13 @@ class TreeSearchEngine:
             if not active_parent_packets:
                 break
 
-            accepted_this_round: list[SearchNode] = []
-            round_node_parents: list[tuple[SearchNode, SearchNode]] = []
+            round_robin = (
+                len(active_parent_packets) > 1
+                and self.config.max_agent_calls is not None
+                and self._uses_agent_commands()
+            )
+            completed_nodes: list[SearchNode] = []
+            proposals_by_parent: list[list[tuple[SearchNode, SearchNode]]] = []
             effective_beam_width = 1
             for parent, packet in active_parent_packets:
                 effective_children = self._effective_children_limit(packet)
@@ -149,15 +154,27 @@ class TreeSearchEngine:
                     }
                     self._record_hypothesis(node.hypothesis)
                     pending_node_parents.append((node, parent))
-                completed_nodes = self._run_candidate_batch(pending_node_parents)
-                round_node_parents.extend((node, parent) for node, parent in pending_node_parents)
-                for node in completed_nodes:
-                    if node.status == "completed" and node.evaluation_result and node.evaluation_result.accepted:
-                        accepted_this_round.append(node)
+                proposals_by_parent.append(pending_node_parents)
+                if not round_robin:
+                    completed_nodes.extend(self._run_candidate_batch(pending_node_parents))
 
+            if round_robin:
+                # Try one child from each retained parent before spending calls on siblings.
+                round_robin_order = [
+                    pair
+                    for turn in zip_longest(*proposals_by_parent)
+                    for pair in turn
+                    if pair is not None
+                ]
+                completed_nodes = self._run_candidate_batch(round_robin_order)
+
+            accepted_this_round = [
+                node for node in completed_nodes
+                if node.status == "completed" and node.evaluation_result and node.evaluation_result.accepted
+            ]
             if accepted_this_round:
                 accepted_this_round.sort(
-                    key=lambda item: item.evaluation_result.score if item.evaluation_result else float("-inf"),
+                    key=lambda item: item.evaluation_result.score,
                     reverse=True,
                 )
                 next_frontier = [node.id for node in accepted_this_round[:effective_beam_width]]
@@ -168,7 +185,7 @@ class TreeSearchEngine:
             else:
                 promoted = set(self.frontier_node_ids)
 
-            for node, parent in round_node_parents:
+            for node, parent in chain.from_iterable(proposals_by_parent):
                 self.archive.record_node(
                     node=node,
                     parent=parent,
@@ -454,23 +471,7 @@ class TreeSearchEngine:
         return max(1, min(configured, pending_count))
 
     def _uses_agent_commands(self) -> bool:
-        planner_config = role_config_for(self.config.role_configs, "planner")
-        executor_config = role_config_for(self.config.role_configs, "executor")
-        reflector_config = role_config_for(self.config.role_configs, "reflector")
-        return bool(
-            self.config.planner_command
-            or self.config.executor_command
-            or self.config.reflector_command
-            or planner_config.command
-            or executor_config.command
-            or reflector_config.command
-            or planner_config.backend
-            or executor_config.backend
-            or reflector_config.backend
-            or should_use_codex_app_server(planner_config, command=planner_config.command or self.config.planner_command)
-            or should_use_codex_app_server(executor_config, command=executor_config.command or self.config.executor_command)
-            or should_use_codex_app_server(reflector_config, command=reflector_config.command or self.config.reflector_command)
-        )
+        return any(role_uses_agent(self.config, role) for role in KNOWN_AGENT_ROLES)
 
 
 def _now_iso() -> str:

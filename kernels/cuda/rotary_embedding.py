@@ -144,7 +144,6 @@ std::vector<torch::Tensor> precompute_freqs_cuda(int N, int D, torch::Device dev
 """
 
 _module = None
-_freq_cache = {}  # (N, D) -> (cos_cache, sin_cache)
 
 
 def _get_module():
@@ -154,20 +153,6 @@ def _get_module():
     return _module
 
 
-def _get_freqs(N: int, D: int, device: torch.device):
-    """Get or compute cached cos/sin frequency tables."""
-    key = (N, D, str(device))
-    if key not in _freq_cache:
-        # Compute on GPU using our kernel
-        half_D = D // 2
-        positions = torch.arange(N, device=device, dtype=torch.float32)
-        dim_indices = torch.arange(half_D, device=device, dtype=torch.float32)
-        freqs = 1.0 / (10000.0 ** (2.0 * dim_indices / D))
-        theta = positions.unsqueeze(1) * freqs.unsqueeze(0)  # [N, D/2]
-        cos_cache = torch.cos(theta).to(torch.float16)
-        sin_cache = torch.sin(theta).to(torch.float16)
-        _freq_cache[key] = (cos_cache, sin_cache)
-    return _freq_cache[key]
 
 
 def kernel_fn(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:

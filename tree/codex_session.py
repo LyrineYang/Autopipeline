@@ -14,11 +14,6 @@ LEGACY_COMMAND_BACKENDS = {"command", "json-command", "json_command", "subproces
 CODEX_PROVIDER_NAMES = {"codex", "openai-codex", "openai_codex"}
 
 
-def is_codex_app_server_backend(role_config: AgentRoleConfig) -> bool:
-    values = {role_config.backend, role_config.provider}
-    return any(_normalize_backend(value) in CODEX_APP_SERVER_BACKENDS for value in values)
-
-
 def should_use_codex_app_server(role_config: AgentRoleConfig, *, command: str | None) -> bool:
     backend = _normalize_backend(role_config.backend)
     if backend in LEGACY_COMMAND_BACKENDS:
@@ -106,7 +101,6 @@ def persist_agent_session(
     )
 
 
-persist_executor_session = persist_agent_session
 
 
 def _default_session_key(logs_dir: Path) -> str:

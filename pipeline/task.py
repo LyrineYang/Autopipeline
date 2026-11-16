@@ -52,7 +52,7 @@ class PipelineSpec:
         from .validation import validate_spec_data
         validate_spec_data(data, spec_path)
         base_dir = spec_path.parent
-        workspace_source = Path(str(data.get("workspace_source", "")))
+        workspace_source = Path(str(data["workspace_source"]))
         if not workspace_source.is_absolute():
             workspace_source = (base_dir / workspace_source).resolve()
         return cls(
@@ -60,18 +60,18 @@ class PipelineSpec:
             name=str(data.get("name") or spec_path.stem),
             objective=str(data.get("objective") or "Optimize pipeline objective metrics."),
             workspace_source=workspace_source,
-            target_path=str(data.get("target_path") or data.get("target") or "."),
-            editable_paths=[str(item) for item in data.get("editable_paths", [])],
-            reference_paths=[str(item) for item in data.get("reference_paths", [])],
-            constraints=[str(item) for item in data.get("constraints", [])],
-            objective_signals=[str(item) for item in data.get("objective_signals", [])],
-            evaluate_command=data.get("evaluate_command", []),
+            target_path=data.get("target_path", data.get("target", ".")),
+            editable_paths=data.get("editable_paths", []),
+            reference_paths=data.get("reference_paths", []),
+            constraints=data.get("constraints", []),
+            objective_signals=data.get("objective_signals", []),
+            evaluate_command=data["evaluate_command"],
             metrics_path=str(data.get("metrics_path", "metrics.json")),
-            score_metric=str(data.get("score_metric", "throughput")),
-            score_direction=str(data.get("score_direction", "higher")),
+            score_metric=data.get("score_metric", "throughput"),
+            score_direction=data.get("score_direction", "higher"),
             final_verify_command=data.get("final_verify_command"),
             timeout_seconds=_optional_float(data.get("timeout_seconds", 300)),
-            metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+            metadata=data.get("metadata", {}),
         )
 
 

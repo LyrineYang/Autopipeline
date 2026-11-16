@@ -6,8 +6,9 @@
 
 ## 当前可交付范围
 
-产品版本为 `1.4.0a5`，原生入口是 `autopipeline pipeline`。
-安装 wheel 后可以在源码目录之外初始化、检查、评估和导出工作负载。
+产品版本为 `1.4.0a6`，原生入口是 `autopipeline pipeline`。
+安装 wheel 后可以在源码目录之外初始化、检查、评估、搜索和导出工作负载。
+wheel 只包含原生 pipeline、树搜索引擎和内置工作负载。
 `tree`、`profile`、`extract` 等历史命令仍有源码检出依赖，不能据此宣称所有
 兼容命令都已经独立打包。Level 5 题目和 apimetric 实验统计统一在 `research/level5`，与产品 main 分开维护。
 
@@ -46,16 +47,15 @@ Dependabot 只监控 Python 与 GitHub Actions。远端 CI 结果应在推送后
 | 需要回答的问题 | 为什么影响产品 | 所需资源与执行路径 | 暂无资源时的推进方式 |
 | --- | --- | --- | --- |
 | CUDA 上是否可安装、编译并正确执行？ | 决定服务器首次使用是否成功 | NVIDIA Linux 服务器；记录驱动、CUDA、PyTorch，运行小案例并保存 profiler/复验产物 | 保持 CPU 安装与失败诊断覆盖，准备相同 CLI 入口 |
-| 真实 agent 能否完成一次编辑、测量和采纳/回退？ | 决定优化闭环是否可用 | 已认证的 agent 后端与明确调用预算；可先在 CPU 小案例运行 | 完成协议、超时、预算与失败路径验证；无需等待 GPU |
+| CUDA 上真实 agent 能否完成一次编辑、测量和采纳/回退？ | 决定 GPU 优化闭环是否可用 | 已认证的 agent 后端与明确调用预算 | CPU 小案例已验证真实 agent 闭环，CUDA 使用相同 CLI |
 | 代表性工作负载是否获得可重复收益？ | 决定优化是否值得使用 | 用户选定任务、输入分布和权重；GPU 上比较固定参考与最终候选 | 先确定工作负载契约与比较指标，不用合成分数代替收益 |
 
 以上缺口限制的是 CUDA/优化收益的结论，不阻止继续交付和改进可安装的 alpha 产品。
 
 ## 公共包发布前的结构问题
 
-wheel 仍暴露 `tree`、`pipeline`、`kernelbench`、`kernels`、`models` 等顶层包名。
-公开 PyPI 分发前应迁移到 `autopipeline.*` 或作出明确的兼容策略，尤其要检查
-`hf-kernels` 可选依赖的 `kernels` 包与本地包的重名风险。
+wheel 暴露 `autopipeline`、`tree`、`pipeline` 三个顶层包名。
+公开 PyPI 分发前应评估将 `tree` 和 `pipeline` 迁入 `autopipeline.*` 的兼容策略。
 本地安装验收不等于已验证与其他 Python 项目的共存能力。
 
 网站上线、benchmark 论文实验和库版本发布分别安排；不将网站构建或完整 GPU
@@ -80,7 +80,7 @@ GitHub 上的 origin 是私有仓库，默认分支仍为 `codex/open-source-rel
 
 ## 目录迁移复验（2026-09-17）
 
-当前产品路径与环境入口见 [工作目录说明](worktree-map.md#迁移后的维护入口)。
+当前产品路径与环境入口见 [工作目录说明](worktree-map.md)。
 现有 a5 wheel 在新路径的独立环境中重新安装；迁移验收索引为
 `workspace/path-migration-20260917/acceptance.json`，CPU 命令日志和结果在同目录
 的 `cpu-workflow/`。原有 `workspace/u1-release/` 交付物及验收记录保持不变。

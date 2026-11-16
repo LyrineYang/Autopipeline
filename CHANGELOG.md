@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 1.4.0a6
+
+- The native pipeline defaults to retaining up to two search branches. With a
+  call budget, retained parents get an initial candidate attempt before any
+  parent gets a second attempt. Cost limits and final verification still apply.
+- The wheel ships the native pipeline, tree runtime, and packaged workloads.
+  Extracted-kernel and KernelBench commands continue to use a source checkout.
+- Removed unused kernel, CLI, and executor compatibility code. Reused validated
+  spec fields and file hashes in the product workflow.
+- Updated the CUDA profiler sort key for supported PyTorch releases.
+- Simplified onboarding around the CPU evaluation, two-round tree search,
+  export and recheck, and the first NVIDIA preflight.
+
+## Earlier alpha releases
 
 ### Task-oriented user workflow (1.4.0a5)
 

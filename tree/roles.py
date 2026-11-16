@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from .types import AgentRoleConfig
+from .codex_session import should_use_codex_app_server
+from .types import AgentRoleConfig, SearchConfig
 
 KNOWN_AGENT_ROLES = ("planner", "executor", "reflector")
 
@@ -43,6 +44,12 @@ def normalize_role_config(value: Any) -> AgentRoleConfig:
 
 def role_config_for(configs: dict[str, AgentRoleConfig], role: str) -> AgentRoleConfig:
     return configs.get(role, AgentRoleConfig())
+
+
+def role_uses_agent(config: SearchConfig, role: str) -> bool:
+    role_config = role_config_for(config.role_configs, role)
+    command = role_config.command or getattr(config, f"{role}_command")
+    return bool(command or role_config.backend or should_use_codex_app_server(role_config, command=command))
 
 
 def add_role_config_args(parser: Any) -> None:

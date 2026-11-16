@@ -27,12 +27,14 @@ from .report import write_product_view
 
 def readiness(spec: PipelineSpec, *, args, require_executor=False) -> dict:
     errors, notes = [], []
-    runtime = "not_checked" if getattr(args, "no_runtime", False) else "custom_evaluator"
-    if (spec.metadata or {}).get("runtime") == "pytorch":
+    no_runtime = getattr(args, "no_runtime", False)
+    runtime = "not_checked" if no_runtime else "custom_evaluator"
+    metadata = spec.metadata or {}
+    if metadata.get("runtime") == "pytorch":
         from .evaluate import validate_config
         config = json.loads((spec.workspace_source / "workload.json").read_text())
         validate_config(config)
-        if spec.metadata.get("example") == "hf-local":
+        if metadata.get("example") == "hf-local":
             model = json.loads((spec.workspace_source / "model.json").read_text())
             if not isinstance(model, dict) or not isinstance(model.get("model_dir"), str):
                 raise ValueError("model.json must specify a local model_dir")
@@ -42,16 +44,16 @@ def readiness(spec: PipelineSpec, *, args, require_executor=False) -> dict:
             for key in ("batch_size", "sequence_length"):
                 if type(model.get(key)) is not int or model[key] < 1:
                     raise ValueError(f"model.json {key} must be a positive integer")
-            if not getattr(args, "no_runtime", False) and importlib.util.find_spec("transformers") is None:
+            if not no_runtime and importlib.util.find_spec("transformers") is None:
                 errors.append("Transformers is missing. Reinstall your AutoPipeline wheel with [cpu,models], or run python -m pip install '.[cpu,models]' from its source directory.")
             notes.append("Local pretrained weights are external read-only assets; preserve this model version when rechecking exports.")
-        tolerances = spec.metadata.get("numerical_tolerances", {})
+        tolerances = metadata.get("numerical_tolerances", {})
         if any(config[key] != tolerances.get(key) for key in ("atol", "rtol")):
             errors.append("workload.json and pipeline.json numerical tolerances must match")
         for file in ("reference.py", "candidate.py"):
             if not (spec.workspace_source / file).is_file():
                 errors.append(f"Missing workload file: {file}")
-        if not getattr(args, "no_runtime", False):
+        if not no_runtime:
             if importlib.util.find_spec("torch") is None:
                 errors.append("PyTorch is missing. Reinstall your AutoPipeline wheel with [cpu] or [gpu], or run python -m pip install '.[cpu]' from its source directory. Use check --no-runtime for files/config only.")
                 runtime = "unavailable"
@@ -81,23 +83,26 @@ def readiness(spec: PipelineSpec, *, args, require_executor=False) -> dict:
             "errors": errors, "notes": notes}
 
 
-def _hash_workspace(directory: Path) -> dict:
-    if any(p.is_symlink() for p in directory.rglob("*")):
-        raise ValueError("Workspace contains symlinks; copy files and revalidate")
-    return {str(p.relative_to(directory)): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(directory.rglob("*")) if p.is_file() and "__pycache__" not in p.parts
-            and ".autopipeline" not in p.parts and p.name != "metrics.json"}
+def _hash_workspace(directory: Path) -> dict[str, str]:
+    hashes = {}
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("Workspace contains symlinks; copy files and revalidate")
+        if path.is_file() and "__pycache__" not in path.parts and ".autopipeline" not in path.parts and path.name != "metrics.json":
+            hashes[str(path.relative_to(directory))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
 
 
-def _editable_hashes(directory: Path, spec: PipelineSpec) -> dict:
+def _editable_hashes(hashes: dict[str, str], spec: PipelineSpec) -> dict[str, str]:
     editable = [Path(p) for p in spec.editable_paths] or [Path(spec.target_path)]
-    return {key: digest for key, digest in _hash_workspace(directory).items()
+    return {key: digest for key, digest in hashes.items()
             if key not in {"bottleneck_region.json", spec.metrics_path} and any(Path(key) == p or p in Path(key).parents for p in editable)}
 
 
 def run_workload(args) -> int:
     spec = PipelineSpec.load(Path(args.spec))
-    check = readiness(spec, args=args, require_executor=args.command == "run")
+    run = args.command == "run"
+    check = readiness(spec, args=args, require_executor=run)
     if not check["ok"]:
         raise ValueError("\n".join(check["errors"]))
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
@@ -118,8 +123,10 @@ def run_workload(args) -> int:
         print(f"运行目录：{run_dir}\n环境：{check['runtime']}", flush=True)
         print(f"候选可编辑文件：{', '.join(spec.editable_paths) or spec.target_path}；参考和评测配置保持固定。", flush=True)
         print("即将执行本地参考与候选代码；工作区复制不是操作系统安全沙箱。", flush=True)
-        if args.command == "run":
+        if run:
             print(f"Agent：{check['executor']}；可能联系已配置服务并消耗额度。\n"
+                  f"树搜索：最多 {args.max_rounds} 轮，每个父分支尝试 {args.children_per_expansion} 个候选，"
+                  f"每轮保留最多 {args.beam_width} 个。\n"
                   f"预算：最多 {args.max_agent_calls} 次 agent 调用、{args.max_probe_calls} 次主动探测；"
                   f"每次 agent 命令超时 {args.command_timeout_seconds:g} 秒。调用次数不是金额上限。\n"
                   "先评估基线，基线无效不会开始 agent 调用；优化不保证提速。", flush=True)
@@ -145,7 +152,6 @@ def run_workload(args) -> int:
         task.initial_candidate = initial
         task.measurement_only_baseline = True
         roles = build_role_configs_from_args(args)
-        run = args.command == "run"
         config = SearchConfig(
             require_valid_baseline=True,
             max_rounds=args.max_rounds if run else 0, beam_width=args.beam_width if run else 1,
@@ -165,24 +171,26 @@ def run_workload(args) -> int:
         engine = TreeSearchEngine(task=task, agent=agent, config=config, run_dir=run_dir)
         result = engine.run()
         children = [node for node in engine.nodes.values() if node.parent_id is not None]
-        successful_edits = [node for node in children if node.execution_result and node.execution_result.status == "completed"]
         verified = bool(result.promoted_path and result.final_verify and result.final_verify.get("accepted"))
-        all_agent_failed = bool(run and (not children or not successful_edits))
+        all_agent_failed = run and not any(
+            node.execution_result and node.execution_result.status == "completed" for node in children
+        )
+        candidate_hashes = _hash_workspace(Path(result.promoted_path)) if result.promoted_path else {}
         status = "verified" if not run else "completed_no_improvement"
-        baseline = next(node for node in engine.nodes.values() if node.parent_id is None)
-        candidate_changed = bool(result.promoted_path and _editable_hashes(Path(result.promoted_path), task.spec)
-                                 != _editable_hashes(Path(baseline.sandbox_path), task.spec))
-        if run and candidate_changed and engine.root_memory.best_score > engine.root_memory.baseline_score:
-            status = "completed_improved"
-        reference_changed = _hash_workspace(frozen) != original_hashes
+        if run and verified and engine.root_memory.best_score > engine.root_memory.baseline_score:
+            baseline = next(node for node in engine.nodes.values() if node.parent_id is None)
+            baseline_hashes = _hash_workspace(Path(baseline.sandbox_path))
+            if _editable_hashes(candidate_hashes, task.spec) != _editable_hashes(baseline_hashes, task.spec):
+                status = "completed_improved"
+        reference_hashes = _hash_workspace(frozen)
+        reference_changed = reference_hashes != original_hashes
         if reference_changed:
             verified = False
         if not verified or all_agent_failed:
             status = "failed"
         summary = {"status": status, "run_dir": str(run_dir), "verified": verified,
                    "best_node_id": result.best_node_id, "candidate": result.promoted_path,
-                   "candidate_hashes": _hash_workspace(Path(result.promoted_path)) if result.promoted_path else {},
-                   "reference_hashes": _hash_workspace(frozen),
+                   "candidate_hashes": candidate_hashes, "reference_hashes": reference_hashes,
                    "attempts": len(children), "finished_at": datetime.now(timezone.utc).isoformat(),
                    "failure_reason": "Frozen reference changed during execution" if reference_changed else
                                       "All executor attempts failed or no attempt could start" if all_agent_failed else
@@ -204,7 +212,7 @@ def run_workload(args) -> int:
             print(f"Candidate: {result.promoted_path}")
         print("\n".join(next_steps(run_dir, summary)))
         return 0 if status != "failed" else 1
-    except BaseException as exc:
+    except (Exception, KeyboardInterrupt) as exc:
         write_json(result_path, {"status": "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
                                  "error": f"{type(exc).__name__}: {exc}", "run_dir": str(run_dir)})
         print("查看失败记录：" + command("autopipeline", "report", run_dir), file=sys.stderr)

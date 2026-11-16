@@ -180,17 +180,6 @@ class BudgetLedger:
                 }
                 for family, stats in sorted(self.family_stats.items())
             }
-            remaining_agent_calls = (
-                None
-                if self.max_agent_calls is None
-                else max(0, self.max_agent_calls - self.agent_calls)
-            )
-            probe_calls = sum(int(item.get("calls", 0)) for item in self.probe_stats.values())
-            remaining_probe_calls = (
-                None
-                if self.max_probe_calls is None
-                else max(0, self.max_probe_calls - probe_calls)
-            )
             return {
                 "agent_usage": {
                     "agent_calls": self.agent_calls,
@@ -200,11 +189,11 @@ class BudgetLedger:
                     "completion_tokens": self.completion_tokens,
                     "cost_usd": self.cost_usd,
                     "agent_seconds": self.agent_seconds,
-                    "remaining_agent_calls": remaining_agent_calls,
+                    "remaining_agent_calls": self.remaining_agent_calls(),
                 },
                 "probe_usage": {
-                    "probe_calls": probe_calls,
-                    "remaining_probe_calls": remaining_probe_calls,
+                    "probe_calls": self.probe_calls,
+                    "remaining_probe_calls": self.remaining_probe_calls(),
                 },
                 "command_stats": self.command_stats,
                 "role_stats": self.role_stats,
@@ -223,20 +212,11 @@ class BudgetLedger:
                 "api_calls": self.api_calls,
                 "total_tokens": self.total_tokens,
                 "cost_usd": self.cost_usd,
-                "remaining_agent_calls": (
-                    None
-                    if self.max_agent_calls is None
-                    else max(0, self.max_agent_calls - self.agent_calls)
-                ),
+                "remaining_agent_calls": self.remaining_agent_calls(),
             }
-            probe_calls = sum(int(item.get("calls", 0)) for item in self.probe_stats.values())
             probe_usage = {
-                "probe_calls": probe_calls,
-                "remaining_probe_calls": (
-                    None
-                    if self.max_probe_calls is None
-                    else max(0, self.max_probe_calls - probe_calls)
-                ),
+                "probe_calls": self.probe_calls,
+                "remaining_probe_calls": self.remaining_probe_calls(),
             }
             role_stats = dict(self.role_stats)
 

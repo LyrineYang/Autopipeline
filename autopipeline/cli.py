@@ -236,8 +236,6 @@ def main(argv: list[str] | None = None) -> int:
         if rest[0] != "run":
             print(f"ERROR: unknown tree command: {rest[0]}", file=sys.stderr)
             return 2
-        if len(rest) > 1 and rest[1] in {"-h", "--help"}:
-            return _run_source_script("tree_optimize.py", rest[1:])
         return _run_source_script("tree_optimize.py", rest[1:])
 
     if command in COMMANDS:

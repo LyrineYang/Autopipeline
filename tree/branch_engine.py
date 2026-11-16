@@ -5,8 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .agent import AgentAdapter
-from .codex_session import should_use_codex_app_server
-from .roles import role_config_for
+from .roles import role_uses_agent
 from .task import candidate_checkpoint_path, checkpoint_candidate, restore_candidate
 from .types import ExecutionResult, Insight, RootMemory, SearchConfig, SearchNode, TaskSnapshot
 
@@ -38,6 +37,9 @@ class BranchEngine:
         self.budget_ledger = budget_ledger
 
     def run(self, node: SearchNode, parent: SearchNode) -> None:
+        if self._agent_budget_exhausted("executor"):
+            self._mark_budget_pruned(node)
+            return
         node.status = "running"
         self.task.create_sandbox(node, parent)
         self._prepare_execution_surface(node, parent)
@@ -51,9 +53,6 @@ class BranchEngine:
         self._run_local_loop(node, parent, branch_iterations)
 
     def _run_single_step(self, node: SearchNode, parent: SearchNode) -> None:
-        if self._agent_budget_exhausted(self._role_command("executor")):
-            self._mark_budget_pruned(node)
-            return
         node.execution_result = self.agent.execute(
             self.task,
             self.task_snapshot,
@@ -112,7 +111,7 @@ class BranchEngine:
         local_history: list[dict[str, object]] = []
 
         for iteration in range(1, branch_iterations + 1):
-            if self._agent_budget_exhausted(self._role_command("executor")):
+            if self._agent_budget_exhausted("executor"):
                 local_history.append(
                     {
                         "iteration": iteration,
@@ -313,7 +312,7 @@ class BranchEngine:
         return evaluation_result
 
     def _branch_iteration_limit(self, parent: SearchNode, node: SearchNode) -> int:
-        if not self._role_command("executor"):
+        if not role_uses_agent(self.config, "executor"):
             return 1
         planner_limit = node.planner_context.get("branch_budget_rounds")
         planner_limit = int(planner_limit) if planner_limit is not None else None
@@ -328,7 +327,7 @@ class BranchEngine:
             limit = min(limit, planner_limit)
         remaining_agent_calls = (
             self.budget_ledger.remaining_agent_calls()
-            if self.budget_ledger is not None and self._role_command("executor")
+            if self.budget_ledger is not None
             else None
         )
         if remaining_agent_calls is not None:
@@ -336,7 +335,7 @@ class BranchEngine:
         return max(1, limit)
 
     def _reflect(self, node: SearchNode, parent: SearchNode) -> Insight:
-        if self._agent_budget_exhausted(self._role_command("reflector")):
+        if self._agent_budget_exhausted("reflector"):
             self.log_event(
                 "reflection_skipped",
                 {
@@ -358,27 +357,12 @@ class BranchEngine:
             node,
         )
 
-    def _agent_budget_exhausted(self, command: str | None) -> bool:
-        return bool(command and self.budget_ledger is not None and not self.budget_ledger.can_start_agent_step())
-
-    def _role_command(self, role: str) -> str | None:
-        role_config = role_config_for(self.config.role_configs, role)
-        if role == "planner":
-            command = role_config.command or self.config.planner_command
-            if should_use_codex_app_server(role_config, command=command):
-                return "codex_app_server"
-            return command or role_config.backend
-        if role == "executor":
-            command = role_config.command or self.config.executor_command
-            if should_use_codex_app_server(role_config, command=command):
-                return "codex_app_server"
-            return role_config.command or self.config.executor_command or role_config.backend
-        if role == "reflector":
-            command = role_config.command or self.config.reflector_command
-            if should_use_codex_app_server(role_config, command=command):
-                return "codex_app_server"
-            return command or role_config.backend
-        return role_config.command or role_config.backend
+    def _agent_budget_exhausted(self, role: str) -> bool:
+        return (
+            self.budget_ledger is not None
+            and role_uses_agent(self.config, role)
+            and not self.budget_ledger.can_start_agent_step()
+        )
 
     def _mark_budget_pruned(self, node: SearchNode) -> None:
         node.execution_result = ExecutionResult(

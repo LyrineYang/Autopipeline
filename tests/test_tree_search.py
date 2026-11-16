@@ -488,6 +488,58 @@ class TreeSearchEngineTests(unittest.TestCase):
 
             self.assertEqual(task.max_active_evaluations, 1)
 
+    def test_retained_parents_get_a_turn_before_extra_siblings(self) -> None:
+        class CountingAgent(FakeAgent):
+            def set_budget_ledger(self, ledger) -> None:
+                self.ledger = ledger
+                self.attempts = []
+
+            def execute(self, task, task_snapshot, root, parent, node) -> ExecutionResult:
+                self.attempts.append(node.hypothesis.id)
+                self.ledger.record_command(action="execute", status="completed", duration_seconds=0)
+                return super().execute(task, task_snapshot, root, parent, node)
+
+        scores = {
+            "Record the unmodified baseline workspace.": 1.0,
+            "first": 1.10,
+            "second": 1.06,
+            "first-1": 1.11,
+            "first-2": 1.12,
+            "second-1": 1.40,
+        }
+        cards = {
+            name: Hypothesis(id=name, title=name, core_hypothesis=name)
+            for name in ("first", "second", "first-1", "first-2", "second-1")
+        }
+        task = FakeTask(
+            seed_hypotheses=[cards["first"], cards["second"]],
+            score_by_hypothesis=scores,
+            accepted_hypotheses=set(scores),
+        )
+        agent = CountingAgent(proposals_by_parent={
+            "node-0001": [cards["first"], cards["second"]],
+            "node-0002": [cards["first-1"], cards["first-2"]],
+            "node-0003": [cards["second-1"]],
+        })
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = TreeSearchEngine(
+                task=task,
+                agent=agent,
+                config=SearchConfig(
+                    beam_width=2,
+                    max_rounds=2,
+                    children_per_expansion=2,
+                    executor_command="executor",
+                    max_agent_calls=4,
+                ),
+                run_dir=Path(tmpdir),
+            )
+            result = engine.run()
+
+        self.assertEqual(agent.attempts, ["first", "second", "first-1", "second-1"])
+        self.assertEqual(engine.nodes[result.best_node_id].hypothesis.id, "second-1")
+        self.assertEqual(engine.budget_ledger.remaining_agent_calls(), 0)
+
     def test_run_archive_records_motifs_and_planner_prior(self) -> None:
         branch = Hypothesis(
             id="fast",

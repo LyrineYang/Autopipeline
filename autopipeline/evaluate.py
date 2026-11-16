@@ -104,10 +104,12 @@ def evaluate(workspace: Path, reference_workspace: Path, config: dict, *, refere
                 if not torch.equal(expected, actual):
                     raise ValueError("Integer or boolean output differs from reference")
                 return
-            diff = (expected.double() - actual.double()).abs()
-            bound = config["atol"] + config["rtol"] * expected.double().abs()
+            expected_double = expected.double()
+            diff = (expected_double - actual.double()).abs()
+            magnitude = expected_double.abs()
+            bound = config["atol"] + config["rtol"] * magnitude
             ratio = torch.where(diff == 0, 0.0, diff / bound)
-            relative = diff / expected.double().abs().clamp_min(1e-300)
+            relative = diff / magnitude.clamp_min(1e-300)
             for key, values in (("max_abs_error", diff), ("max_rel_error", relative), ("max_normalized_error", ratio)):
                 errors[key] = max(errors[key], values.max().item())
         elif isinstance(expected, dict):
@@ -156,7 +158,6 @@ def evaluate(workspace: Path, reference_workspace: Path, config: dict, *, refere
         peak = torch.cuda.max_memory_allocated() / 1024**2 if device == "cuda" else None
         artifacts = workspace / ".autopipeline"
         artifacts.mkdir(exist_ok=True)
-        profiler = {"status": "unavailable", "reason": "Profiler has not run"}
         try:
             activities = [torch.profiler.ProfilerActivity.CPU]
             if device == "cuda":
@@ -166,16 +167,17 @@ def evaluate(workspace: Path, reference_workspace: Path, config: dict, *, refere
                 call(model, inputs)
                 sync()
             prof.export_chrome_trace(str(artifacts / "trace.json"))
-            table = prof.key_averages().table(sort_by="self_cuda_time_total" if device == "cuda" else "self_cpu_time_total", row_limit=30)
+            table = prof.key_averages().table(sort_by="self_device_time_total" if device == "cuda" else "self_cpu_time_total", row_limit=30)
             (artifacts / "operators.txt").write_text(table, encoding="utf-8")
             profiler = {"status": "completed", "trace": ".autopipeline/trace.json", "operators": ".autopipeline/operators.txt"}
         except Exception as exc:
             profiler = {"status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
 
+    latency_ms = statistics.median(samples)
     return {"correctness": "PASS", **errors,
             "numerical_atol": config["atol"], "numerical_rtol": config["rtol"],
-            "end_to_end_ms": statistics.median(samples), "latency_samples_ms": samples,
-            "throughput": 1000 / statistics.median(samples), "peak_vram_mb": peak,
+            "end_to_end_ms": latency_ms, "latency_samples_ms": samples,
+            "throughput": 1000 / latency_ms, "peak_vram_mb": peak,
             "measurement_scope": "model forward, including host dispatch and device synchronization; excluding input preparation",
             "profiler": profiler, "device": device,
             "gpu": torch.cuda.get_device_name() if device == "cuda" else None,

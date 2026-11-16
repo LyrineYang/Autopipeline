@@ -14,7 +14,7 @@ AutoPipeline workload commands
   init DIRECTORY --device cpu       Create a workload (otherwise defaults to CUDA)
   check --spec FILE                 Check files and device; no model execution
   evaluate --spec FILE              Execute and verify without an agent
-  run --spec FILE                   Optimize with your configured agent
+  run --spec FILE                   Search for optimizations with your configured agent
   export RUN_DIR --output-dir DIR   Export verified code for rechecking
 
 Start with init, check, and evaluate; run requires an agent backend.
@@ -59,7 +59,7 @@ def build_parser(*, show_all: bool = False):
     for name in ("check", "evaluate", "run"):
         description = {"check": "Check configuration and device; no model execution or agent service call.",
                        "evaluate": "Execute local reference and candidate code, then independently verify; no agent call.",
-                       "run": "Use your configured agent to edit candidates and independently verify results."}[name]
+                       "run": "Search multiple PyTorch implementations with your agent and independently verify results."}[name]
         epilog = "Existing input files and run directories are never overwritten.\n"
         if name == "check":
             epilog += "A passed check does not prove model execution or agent authentication.\nNext: autopipeline pipeline evaluate --spec FILE"
@@ -71,7 +71,7 @@ def build_parser(*, show_all: bool = False):
                 "Executes local code; workspace copies are not an operating-system security sandbox.\n"
                 "An invalid baseline prevents agent calls. No speedup is guaranteed.\n"
                 "First run:\n  autopipeline pipeline run --spec FILE --executor-backend codex-app-server \\\n"
-                "    --max-rounds 1 --children-per-expansion 1 --max-agent-calls 2 --max-probe-calls 2\n"
+                "    --max-rounds 2 --beam-width 2 --children-per-expansion 2 --max-agent-calls 4 --max-probe-calls 4\n"
                 "Advanced roles and integration: autopipeline pipeline run --help-all")
         p = sub(name, description, epilog)
         p.add_argument("--spec", required=True, help="pipeline.json created by init")
@@ -95,7 +95,7 @@ def build_parser(*, show_all: bool = False):
         if name == "run":
             budget = p.add_argument_group("Search and call limits")
             for flag, default, help_text in (
-                ("beam-width", 1, "Maximum retained search branches"),
+                ("beam-width", 2, "Maximum branches retained after each round"),
                 ("max-rounds", 3, "Maximum search rounds"),
                 ("children-per-expansion", 2, "Candidate attempts per expansion"),
                 ("max-agent-calls", 12, "Maximum agent calls; not a monetary cap"),
