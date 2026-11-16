@@ -1,6 +1,6 @@
 # Tree Adapter
 
-This page explains the current tree-search runtime. Use `autopipeline tree run`
+This page explains the current tree-search runtime. Use `autopipeline kernel run`
 for the source-checkout AutoKernel-compatible task path; direct adapter scripts are
 advanced compatibility entrypoints.
 
@@ -27,7 +27,7 @@ Its current split is:
 AutoKernel-compatible extracted-kernel example:
 
 ```bash
-uv run autopipeline tree run \
+uv run autopipeline kernel run \
   --kernel-file workspace/kernel_matmul_1.py \
   --run-name matmul-tree \
   --beam-width 2 \
@@ -100,7 +100,7 @@ The adapter has two role backends:
 These examples require an installed and authenticated Codex backend. Provider-based role config is also supported:
 
 ```bash
-uv run autopipeline tree run \
+uv run autopipeline kernel run \
   --kernel-file workspace/kernel_matmul_1.py \
   --run-name codex-session-smoke \
   --beam-width 1 \
@@ -147,7 +147,7 @@ Role config may also be passed through environment variables:
 - `TREE_AGENT_TIMEOUT_SECONDS`
 
 The legacy command contract is file-based, but it is no longer just a one-shot
-file drop. For each command, [tree/command.py](../tree/command.py) writes:
+file drop. For each command, [autopipeline/search/command.py](../autopipeline/search/command.py) writes:
 
 - `prompt.txt`
 - `payload.json`

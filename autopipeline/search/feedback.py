@@ -1,3 +1,5 @@
+"""Advisory feedback for the agent, derived from verification and diagnostics."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -5,7 +7,7 @@ from typing import Any
 from .types import RootMemory, SearchNode, TaskSnapshot
 
 
-def build_verifier_summary(
+def build_agent_feedback(
     *,
     task_snapshot: TaskSnapshot,
     root: RootMemory,
@@ -84,7 +86,9 @@ def build_verifier_summary(
     if root.best_score is not None:
         evidence.append(f"Best known score: {root.best_score:.3f}")
 
-    customizer = getattr(task, "augment_verifier_summary", None)
+    customizer = getattr(task, "augment_agent_feedback", None)
+    if customizer is None:
+        customizer = getattr(task, "augment_verifier_summary", None)
     if callable(customizer):
         custom = customizer(
             task_snapshot=task_snapshot,
@@ -109,6 +113,7 @@ def build_verifier_summary(
         "uncertainty": _dedupe(uncertainty)[:5],
         "objective_evaluation": objective_evaluation,
         "verification_backend": verification_backend,
+        "verification_verdict": verification_backend.get("verdict") if verification_backend else None,
         "probe_health": {
             "probe_count": len(recent_probe_results),
             "completed_count": len(completed),

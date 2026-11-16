@@ -62,7 +62,9 @@ class AgentAdapter(abc.ABC):
         raise NotImplementedError
 
 
-class NoOpAgentAdapter(AgentAdapter):
+class LocalAgentAdapter(AgentAdapter):
+    """Suggest and reflect locally, leaving the candidate unchanged."""
+
     def propose(
         self,
         task: OptimizationTask,
@@ -161,7 +163,7 @@ class CommandAgentAdapter(AgentAdapter):
         self.command_timeout_seconds = command_timeout_seconds
         self.role_configs = normalize_role_configs(role_configs)
         self.budget_ledger = budget_ledger
-        self.fallback = fallback or NoOpAgentAdapter()
+        self.fallback = fallback or LocalAgentAdapter()
 
     def set_budget_ledger(self, budget_ledger: Any) -> None:
         self.budget_ledger = budget_ledger

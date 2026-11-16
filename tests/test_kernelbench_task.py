@@ -9,9 +9,9 @@ from pathlib import Path
 
 from kernelbench.bridge import KernelBenchProblem
 from kernelbench.task import KernelBenchTask, parse_kernelbench_output
-from tree.agent import CommandAgentAdapter
-from tree.search import TreeSearchEngine
-from tree.types import Hypothesis, RootMemory, SearchConfig, SearchNode
+from autopipeline.search.agent import CommandAgentAdapter
+from autopipeline.search.engine import TreeSearchEngine
+from autopipeline.search.types import Hypothesis, RootMemory, SearchConfig, SearchNode
 
 
 class KernelBenchTaskTests(unittest.TestCase):

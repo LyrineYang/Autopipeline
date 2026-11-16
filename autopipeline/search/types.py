@@ -66,7 +66,8 @@ class RegionGraph:
 class BranchBudgetHint:
     children: int | None = None
     beam_width: int | None = None
-    rounds: int | None = None
+    max_tree_depth: int | None = None
+    max_local_iterations: int | None = None
 
 
 @dataclass(slots=True)
@@ -96,7 +97,7 @@ class SearchPolicyHint:
     exploration_bias: str = "balanced"
     branch_budget: BranchBudgetHint = field(default_factory=BranchBudgetHint)
     resource_hint: ResourceHint = field(default_factory=ResourceHint)
-    stop_conditions: list[str] = field(default_factory=list)
+    stop_guidance: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -116,6 +117,12 @@ class EvaluationResult:
     metrics: dict[str, Any]
     summary: str
     raw_log_paths: dict[str, str] = field(default_factory=dict)
+
+
+    @property
+    def ranking_score(self) -> float:
+        """Higher-is-better search score. The artifact key remains score."""
+        return self.score
 
 
 @dataclass(slots=True)
@@ -155,6 +162,11 @@ class SearchNode:
     planner_context: dict[str, Any] = field(default_factory=dict)
     status: NodeStatus = "queued"
     error: str | None = None
+    prune_reason: Literal["budget_exhausted", "beam_limit", "no_improvement"] | None = None
+
+    @property
+    def skipped_before_execution(self) -> bool:
+        return self.prune_reason == "budget_exhausted" and not self.sandbox_path
 
 
 @dataclass(slots=True)

@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 345" role="img" aria-labelledby="title description">
+  <title id="title">AutoPipeline optimization workflow</title>
+  <desc id="description">A fixed workload defines the reference and baseline. The agent proposes edits in multiple rounds. Each child is independently measured and checked. The selected candidate passes a final recheck before export.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" viewBox="0 0 8 8">
+      <path d="M0 0 8 4 0 8" fill="none" stroke="#55625c"/>
+    </marker>
+    <marker id="selected-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" viewBox="0 0 7 7">
+      <path d="M0 0 7 3.5 0 7" fill="none" stroke="#28614c"/>
+    </marker>
+  </defs>
+  <rect x=".5" y=".5" width="1199" height="344" rx="8" fill="#f9f7f0" stroke="#d1ccbc"/>
+  <text x="35" y="47" fill="#202b27" font-family="Georgia, serif" font-size="30">Tree search for PyTorch optimization</text>
+  <path d="M35 66H1165M35 299H1165" stroke="#d1ccbc"/>
+
+  <g font-family="Arial, sans-serif" font-size="17" fill="#202b27">
+    <text x="35" y="100" font-weight="bold">Fix the workload</text>
+    <rect x="35" y="124" width="237" height="141" rx="6" fill="#fffdf8" stroke="#c6c1b1"/>
+    <text x="54" y="155" font-weight="bold">Reference implementation</text>
+    <text x="54" y="190" fill="#45524b">Weights, inputs, and device</text>
+    <text x="54" y="216" fill="#45524b">Numerical tolerances</text>
+    <text x="54" y="242" fill="#45524b">Agent and probe budget</text>
+
+    <text x="323" y="100" font-weight="bold">Edit, measure, and verify each candidate</text>
+    <text x="488" y="130" text-anchor="middle" font-size="15" fill="#45524b">Round 1</text>
+    <text x="689" y="130" text-anchor="middle" font-size="15" fill="#45524b">Round 2</text>
+    <text x="355" y="233" text-anchor="middle" font-size="15" fill="#45524b">Baseline</text>
+
+    <text x="917" y="100" font-weight="bold">Recheck and export</text>
+    <rect x="917" y="124" width="248" height="61" rx="6" fill="#edf4ed" stroke="#789584"/>
+    <text x="936" y="150" font-weight="bold">Final recheck</text>
+    <text x="936" y="172" fill="#45524b" font-size="14">Selected code vs. fixed reference</text>
+    <rect x="917" y="204" width="248" height="61" rx="6" fill="#fffdf8" stroke="#789584"/>
+    <text x="936" y="230" font-weight="bold">Verified export</text>
+    <text x="936" y="252" fill="#45524b" font-size="14">Code, measurements, and verdict</text>
+  </g>
+
+  <g fill="none" stroke="#55625c" stroke-width="1.7" stroke-linecap="round" marker-end="url(#arrow)">
+    <path d="M272 194H338"/>
+    <path d="M366 198C412 198 426 156 475 156"/>
+    <path d="M366 202C410 202 426 250 475 250"/>
+    <path d="M500 155C561 155 585 151 676 151"/>
+    <path d="M500 155C561 155 585 187 676 187" stroke-dasharray="4 4"/>
+    <path d="M500 250C561 250 585 262 676 262" stroke-dasharray="4 4"/>
+  </g>
+  <g fill="none" stroke="#28614c" stroke-width="2.5" stroke-linecap="round" marker-end="url(#selected-arrow)">
+    <path d="M500 250C564 250 587 224 675 224"/>
+    <path d="M706 224H824Q849 224 849 199V179Q849 154 874 154H911"/>
+    <path d="M1041 185V199"/>
+  </g>
+  <circle cx="355" cy="200" r="9" fill="#fffdf8" stroke="#55625c" stroke-width="2"/>
+  <g fill="#edf4ed" stroke="#547564" stroke-width="2">
+    <circle cx="488" cy="156" r="10"/><circle cx="488" cy="250" r="10"/><circle cx="689" cy="151" r="9"/>
+  </g>
+  <g fill="#a65038" font-family="Arial, sans-serif" font-size="22" text-anchor="middle">
+    <text x="689" y="194">×</text><text x="689" y="269">×</text>
+  </g>
+  <circle cx="689" cy="224" r="13" fill="#28614c"/>
+  <path d="m683 224 4 4 7-8" stroke="#fffdf8" stroke-width="2" fill="none"/>
+  <g font-family="Arial, sans-serif" font-size="14" fill="#45524b">
+    <circle cx="41" cy="321" r="5" fill="#edf4ed" stroke="#547564" stroke-width="1.5"/>
+    <text x="54" y="326">Passed assessment</text>
+    <text x="230" y="326" fill="#a65038" font-size="18">×</text>
+    <text x="247" y="326">Rejected candidate</text>
+    <circle cx="427" cy="321" r="5" fill="#28614c"/>
+    <text x="440" y="326">Selected for recheck</text>
+    <text x="1165" y="326" text-anchor="end">Illustrative search tree</text>
+  </g>
+</svg>

@@ -1,8 +1,8 @@
 # Release Checks
 
-The installable product is AutoPipeline 1.4.0a6. The wheel contains the native
+The installable product is AutoPipeline 1.4.0a7. The wheel contains the native
 `autopipeline pipeline` and `autopipeline report` workflow. Compatibility commands such as
-`tree run`, `profile`, `extract`, and KernelBench use a source checkout.
+`kernel run`, `profile`, `extract`, and KernelBench use a source checkout.
 
 ## Validate a Build
 
@@ -31,6 +31,5 @@ and a locally initialized Transformers checkpoint. A real-agent CPU pilot exerci
 verification. The RTX 4060 still needs a CUDA preflight and an equal-budget evaluation of
 repeatable search gains. [Handoff](handoff.md)
 
-The wheel uses the `autopipeline`, `tree`, and `pipeline` top-level package names. A clean
-virtual environment prevents collisions with similarly named packages. Revisit the imports and
-compatibility strategy before a public package release. [Product engineering standard](product-engineering-standard.md)
+The wheel installs only `autopipeline`. Use `autopipeline.search` and `autopipeline.pipeline`
+for Python integrations. Source checkouts provide the historical import aliases. [Product engineering standard](product-engineering-standard.md)

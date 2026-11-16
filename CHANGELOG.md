@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.0a7
+
+- Narrow the task protocol to the required lifecycle. Native Python and theoretical-limit probes
+  now use their default implementations.
+- Report proposed, executed, evaluated, and budget-skipped candidates separately from agent calls.
+  Preserve historical receipt and metrics keys for existing runs and specs.
+- Rank native latency candidates by paired speedup. Name measured forward latency, ranking, agent
+  feedback, and the final verification verdict separately.
+- Move workflow orchestration out of the CLI. Reuse paired evaluation setup and build native
+  planning context from measured signals. Track tree depth and local refinement separately.
+- Install a single `autopipeline` package. Use `autopipeline kernel run` for source compatibility
+  tools. The former CLI command and source imports remain available.
+- Align maintainer context and show the method as a research pipeline in the README.
+
 ## 1.4.0a6
 
 - The native pipeline defaults to retaining up to two search branches. With a

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tree.viewer import build_run_view, write_run_view
+from autopipeline.search.viewer import build_run_view, write_run_view
 
 
 class ViewerTests(unittest.TestCase):

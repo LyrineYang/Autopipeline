@@ -13,11 +13,26 @@ from autopipeline.cli import main
 
 
 class AutoPipelineCliTests(unittest.TestCase):
+    def test_legacy_source_imports_resolve_to_the_canonical_runtime(self):
+        from autopipeline.pipeline.spec import PipelineSpec
+        from autopipeline.search.agent import LocalAgentAdapter
+        from autopipeline.search.engine import TreeSearchEngine
+        from autopipeline.search.feedback import build_agent_feedback
+        from pipeline.task import PipelineSpec as LegacySpec
+        from tree.agent import NoOpAgentAdapter
+        from tree.search import TreeSearchEngine as LegacyEngine
+        from tree.verifier import build_verifier_summary
+
+        self.assertIs(LegacySpec, PipelineSpec)
+        self.assertIs(LegacyEngine, TreeSearchEngine)
+        self.assertIs(NoOpAgentAdapter, LocalAgentAdapter)
+        self.assertIs(build_verifier_summary, build_agent_feedback)
+
     def test_product_import_keeps_smoke_lazy_and_legacy_imports_work(self) -> None:
         result = subprocess.run(
             [sys.executable, "-c", "import autopipeline.pipeline_cli, sys; "
-             "assert 'pipeline.smoke' not in sys.modules; "
-             "from pipeline.task import PipelineSmokeAgent, create_pipeline_smoke_fixture; "
+             "assert 'autopipeline.pipeline.smoke' not in sys.modules; "
+             "from autopipeline.pipeline.task import PipelineSmokeAgent, create_pipeline_smoke_fixture; "
              "from pipeline import run_pipeline_smoke; "
              "from pipeline import smoke; "
              "assert PipelineSmokeAgent is smoke.PipelineSmokeAgent; "

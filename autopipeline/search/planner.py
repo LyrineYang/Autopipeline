@@ -239,14 +239,16 @@ class Planner:
         static_prior = _dict_value(raw_context.get("static_prior"))
         if not static_prior and not _has_task_context(raw_context):
             static_prior = {"source": "seed_hypotheses"}
-        region_graph = self._build_region_graph(raw_context, task_snapshot)
+        region_graph = None
+        if raw_context.get("region_graph", {}) is not None:
+            region_graph = self._build_region_graph(raw_context, task_snapshot)
         bottleneck_card = self._build_bottleneck_card(
             normalized_output or raw_context,
             task_snapshot,
             branch_cards,
             region_graph,
             raw_context,
-        )
+        ) if region_graph is not None else None
         return PlannerPacket(
             static_prior=static_prior,
             hardware_context=_dict_value(raw_context.get("hardware_context")),
@@ -399,6 +401,7 @@ class Planner:
         allowed_scopes = _string_list(rules.get("allowed_scopes")) or [task_snapshot.task_type]
         if isinstance(raw, dict):
             raw_budget = _dict_value(raw.get("branch_budget"))
+            legacy_rounds = raw_budget.get("rounds", raw.get("suggested_rounds"))
             scope = str(raw.get("recommended_scope", allowed_scopes[0]))
             if scope not in allowed_scopes:
                 scope = allowed_scopes[0]
@@ -409,14 +412,15 @@ class Planner:
                 exploration_bias=str(raw.get("exploration_bias", "balanced")),
                 branch_budget=BranchBudgetHint(
                     children=_optional_int(raw_budget.get("children", raw.get("suggested_children"))),
-                    rounds=_optional_int(raw_budget.get("rounds", raw.get("suggested_rounds"))),
+                    max_tree_depth=_optional_int(raw_budget.get("max_tree_depth", legacy_rounds)),
+                    max_local_iterations=_optional_int(raw_budget.get("max_local_iterations", legacy_rounds)),
                     beam_width=_optional_int(raw_budget.get("beam_width", raw.get("suggested_beam_width"))),
                 ),
                 resource_hint=ResourceHint(
                     tier=str(_dict_value(raw.get("resource_hint")).get("tier", raw.get("resource_tier", "balanced"))),
                     notes=_string_list(_dict_value(raw.get("resource_hint")).get("notes", raw.get("resource_notes"))),
                 ),
-                stop_conditions=_string_list(raw.get("stop_conditions")),
+                stop_guidance=_string_list(raw.get("stop_guidance", raw.get("stop_conditions"))),
             )
 
         return SearchPolicyHint(

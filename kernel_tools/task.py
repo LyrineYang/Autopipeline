@@ -10,10 +10,10 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .autokernel_probes import detect_hardware_context, run_autokernel_probe
-from .prior import kernel_optimization_prior, kernel_prior_family_ids
-from .task import OptimizationTask, create_copy_sandbox
-from .types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
+from .probes import detect_hardware_context, run_autokernel_probe
+from autopipeline.search.prior import kernel_optimization_prior, kernel_prior_family_ids
+from autopipeline.search.task import OptimizationTask, create_copy_sandbox
+from autopipeline.search.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 
 _KERNEL_TYPE_RE = re.compile(r'^\s*KERNEL_TYPE\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 _BACKEND_RE = re.compile(r'^\s*BACKEND\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)

@@ -8,9 +8,10 @@ import time
 import unittest
 from pathlib import Path
 
-from tree.agent import AgentAdapter, NoOpAgentAdapter
-from tree.search import TreeSearchEngine
-from tree.types import EvaluationResult, ExecutionResult, Hypothesis, Insight, RootMemory, SearchConfig, SearchNode, TaskSnapshot
+from autopipeline.search.agent import AgentAdapter, LocalAgentAdapter
+from autopipeline.search.engine import TreeSearchEngine
+from autopipeline.search.viewer import build_run_view
+from autopipeline.search.types import EvaluationResult, ExecutionResult, Hypothesis, Insight, RootMemory, SearchConfig, SearchNode, TaskSnapshot
 
 
 class FakeTask:
@@ -535,7 +536,17 @@ class TreeSearchEngineTests(unittest.TestCase):
                 run_dir=Path(tmpdir),
             )
             result = engine.run()
+            view = build_run_view(Path(tmpdir))
 
+        self.assertEqual(view["run_summary"]["search_counts"], {
+            "candidates_proposed": 5,
+            "candidates_executed": 4,
+            "candidates_evaluated": 4,
+            "candidates_skipped_budget": 1,
+            "agent_calls": 4,
+        })
+        self.assertEqual(sum(row["outcome_key"] == "skipped_budget" for row in view["attempts"]), 1)
+        self.assertEqual(view["run_summary"]["counts"]["变更被回退"], 0)
         self.assertEqual(agent.attempts, ["first", "second", "first-1", "second-1"])
         self.assertEqual(engine.nodes[result.best_node_id].hypothesis.id, "second-1")
         self.assertEqual(engine.budget_ledger.remaining_agent_calls(), 0)
@@ -819,7 +830,7 @@ class TreeSearchEngineTests(unittest.TestCase):
             run_dir = Path(tmpdir) / "run"
             engine = TreeSearchEngine(
                 task=task,
-                agent=NoOpAgentAdapter(),
+                agent=LocalAgentAdapter(),
                 config=SearchConfig(beam_width=1, max_rounds=1, children_per_expansion=1),
                 run_dir=run_dir,
             )
@@ -951,7 +962,8 @@ class TreeSearchEngineTests(unittest.TestCase):
                         "branch_budget": {
                             "children": children,
                             "beam_width": 2,
-                            "rounds": budget,
+                            "max_tree_depth": budget,
+                            "max_local_iterations": 1,
                         },
                     },
                 }

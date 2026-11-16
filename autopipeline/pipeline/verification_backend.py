@@ -51,6 +51,7 @@ class ExecutableVerificationBackend:
         score_direction: str = "higher",
         metadata: dict[str, Any] | None = None,
         require_no_regression: bool = True,
+        rank_by_speedup: bool = False,
     ) -> dict[str, Any]:
         if score_direction not in {"higher", "lower"}:
             raise ValueError("score_direction must be 'higher' or 'lower'.")
@@ -73,6 +74,7 @@ class ExecutableVerificationBackend:
             candidate_run.get("metrics", {}),
             score_metric=score_metric,
             score_direction=score_direction,
+            rank_by_speedup=rank_by_speedup,
         )
         failure_reason = _failure_reason(
             reference_run=reference_run,
@@ -211,6 +213,8 @@ def compact_verification_report(report: dict[str, Any]) -> dict[str, Any]:
             "score_direction": performance.get("score_direction"),
             "reference_score_value": performance.get("reference_score_value"),
             "candidate_score_value": performance.get("candidate_score_value"),
+            "ranking_score": performance.get("ranking_score"),
+            "ranking_basis": performance.get("ranking_basis"),
             "speedup": performance.get("speedup"),
             "reference_end_to_end_ms": performance.get("reference_end_to_end_ms"),
             "candidate_end_to_end_ms": performance.get("candidate_end_to_end_ms"),
@@ -339,13 +343,23 @@ def _performance(
     *,
     score_metric: str,
     score_direction: str,
+    rank_by_speedup: bool = False,
 ) -> dict[str, Any]:
     direction = "lower" if str(score_direction).lower() == "lower" else "higher"
     reference_score_raw = _metric_float(reference_metrics, score_metric)
     candidate_score_raw = _metric_float(candidate_metrics, score_metric)
     reference_score_value = _normalized_score(reference_score_raw, direction)
     candidate_score_value = _normalized_score(candidate_score_raw, direction)
-    available = reference_score_value is not None and candidate_score_value is not None
+    speedup = _speedup(reference_metrics, candidate_metrics, score_metric=score_metric, direction=direction)
+    ranking_score = candidate_score_value
+    if rank_by_speedup:
+        ranking_score = (
+            reference_score_raw / candidate_score_raw
+            if reference_score_raw is not None and reference_score_raw > 0
+            and candidate_score_raw is not None and candidate_score_raw > 0
+            else None
+        )
+    available = reference_score_value is not None and candidate_score_value is not None and ranking_score is not None
     passed = available and candidate_score_value >= reference_score_value
     return {
         "available": available,
@@ -356,7 +370,9 @@ def _performance(
         "candidate_score_raw": candidate_score_raw,
         "reference_score_value": reference_score_value,
         "candidate_score_value": candidate_score_value,
-        "speedup": _speedup(reference_metrics, candidate_metrics, score_metric=score_metric, direction=direction),
+        "speedup": speedup,
+        "ranking_score": ranking_score,
+        "ranking_basis": "paired_speedup" if rank_by_speedup else "normalized_objective",
         "reference_end_to_end_ms": _metric_float(reference_metrics, "end_to_end_ms"),
         "candidate_end_to_end_ms": _metric_float(candidate_metrics, "end_to_end_ms"),
         "reference_throughput": _metric_float(reference_metrics, "throughput"),
@@ -418,6 +434,8 @@ def _evidence(
             "speedup": performance.get("speedup"),
             "reference_score_value": performance.get("reference_score_value"),
             "candidate_score_value": performance.get("candidate_score_value"),
+            "ranking_score": performance.get("ranking_score"),
+            "ranking_basis": performance.get("ranking_basis"),
         },
     ]
 
@@ -544,8 +562,9 @@ def _speedup(
     score_metric: str,
     direction: str,
 ) -> float | None:
-    ref_latency = _metric_float(reference_metrics, "end_to_end_ms")
-    cand_latency = _metric_float(candidate_metrics, "end_to_end_ms")
+    latency_key = "forward_latency_ms" if "forward_latency_ms" in reference_metrics else "end_to_end_ms"
+    ref_latency = _metric_float(reference_metrics, latency_key)
+    cand_latency = _metric_float(candidate_metrics, latency_key)
     if ref_latency is not None and cand_latency is not None and cand_latency > 0:
         return ref_latency / cand_latency
     ref = _metric_float(reference_metrics, score_metric)

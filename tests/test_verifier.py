@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from tree.sensing import build_sensing_summary
-from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
-from tree.verifier import build_verifier_summary
+from autopipeline.search.sensing import build_sensing_summary
+from autopipeline.search.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
+from autopipeline.search.feedback import build_agent_feedback
 
 
 class CustomVerifierTask:
@@ -64,7 +64,7 @@ class VerifierTests(unittest.TestCase):
             recent_probe_results=[],
             node=node,
         )
-        summary = build_verifier_summary(
+        summary = build_agent_feedback(
             task_snapshot=task_snapshot,
             root=root,
             recent_probe_results=[],
@@ -136,7 +136,7 @@ class VerifierTests(unittest.TestCase):
             parent=parent,
             node=node,
         )
-        summary = build_verifier_summary(
+        summary = build_agent_feedback(
             task_snapshot=task_snapshot,
             root=RootMemory(objective=task_snapshot.objective, best_score=1.0),
             recent_probe_results=[],
@@ -196,7 +196,7 @@ class VerifierTests(unittest.TestCase):
             parent=parent,
             node=node,
         )
-        summary = build_verifier_summary(
+        summary = build_agent_feedback(
             task_snapshot=task_snapshot,
             root=RootMemory(objective=task_snapshot.objective),
             recent_probe_results=[],
@@ -265,7 +265,7 @@ class VerifierTests(unittest.TestCase):
             parent=parent,
             node=node,
         )
-        summary = build_verifier_summary(
+        summary = build_agent_feedback(
             task_snapshot=task_snapshot,
             root=RootMemory(objective=task_snapshot.objective),
             recent_probe_results=[],
@@ -301,7 +301,7 @@ class VerifierTests(unittest.TestCase):
             ),
         )
 
-        summary = build_verifier_summary(
+        summary = build_agent_feedback(
             task_snapshot=task_snapshot,
             root=RootMemory(objective=task_snapshot.objective),
             recent_probe_results=[],

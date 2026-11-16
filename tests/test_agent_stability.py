@@ -8,10 +8,10 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from tree.agent import CommandAgentAdapter
-from tree.planner import Planner
-from tree.search import TreeSearchEngine
-from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchConfig, SearchNode, TaskSnapshot
+from autopipeline.search.agent import CommandAgentAdapter
+from autopipeline.search.planner import Planner
+from autopipeline.search.engine import TreeSearchEngine
+from autopipeline.search.types import EvaluationResult, Hypothesis, RootMemory, SearchConfig, SearchNode, TaskSnapshot
 
 
 class PlannerContextTask:

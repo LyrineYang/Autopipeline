@@ -29,13 +29,13 @@ jobs:
           python -m pip install -e . --no-deps
 
       - name: Compile Python files
-        run: python -m py_compile autopipeline/*.py tree/*.py kernelbench/*.py pipeline/*.py kernels/*.py kernels/cuda/*.py models/*.py scripts/*.py tests/*.py *.py
+        run: python -m py_compile autopipeline/*.py autopipeline/*/*.py kernel_tools/*.py tree/*.py kernelbench/*.py pipeline/*.py kernels/*.py kernels/cuda/*.py models/*.py scripts/*.py tests/*.py *.py
 
       - name: Smoke CLI
         run: |
           autopipeline --help
           autopipeline doctor --no-gpu
-          autopipeline tree --help
+          autopipeline kernel --help
 
       - name: Run unit tests
         run: python -m unittest discover -s tests

@@ -3,13 +3,13 @@
 <p align="center"><strong>Tree search for verified PyTorch optimizations</strong></p>
 
 <p align="center">
-  <img src="docs/assets/autopipeline-tree.webp" width="880" alt="A search tree with several candidate branches and a highlighted path to the selected implementation">
+  <img src="docs/assets/method.svg" width="100%" alt="Fixed workload, two rounds of independently verified tree search, and final recheck before export">
 </p>
 
 <p align="center">
   <a href="https://github.com/LyrineYang/Autopipeline/actions/workflows/ci.yml"><img src="https://github.com/LyrineYang/Autopipeline/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI on main"></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/Python-3.10%2B-306998?style=flat" alt="Python 3.10 and newer"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.4.0a6-156F78?style=flat" alt="Version 1.4.0a6"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.4.0a7-156F78?style=flat" alt="Version 1.4.0a7"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-40566C?style=flat" alt="MIT license"></a>
 </p>
 
@@ -17,14 +17,14 @@
   <a href="#quick-start">Quick Start</a> ·
   <a href="docs/quickstart.md">Guide</a> ·
   <a href="examples/README.md">Examples</a> ·
-  <a href="docs/quickstart.md#nvidia-preflight">NVIDIA Setup</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
   <a href="docs/dev/handoff.md">Handoff</a>
 </p>
 
 Give AutoPipeline a reference implementation, representative inputs, and a device. A coding agent
 tries different implementations. AutoPipeline checks their outputs and measures forward latency
-against the fixed reference, then keeps up to two branches per round by default. It rechecks the
-selected implementation before you export it.
+against the fixed reference, then keeps up to two branches per round by default. The native
+workflow ranks candidates by paired speedup and rechecks the selected implementation before export.
 
 | Search within a budget | Judge changes independently | Keep a reproducible result |
 | --- | --- | --- |

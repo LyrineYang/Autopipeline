@@ -45,7 +45,7 @@ DEVELOPER_HELP = """\
 Developer and compatibility tools:
   autopipeline doctor [--no-gpu] [--json]          Environment diagnostics
   autopipeline pipeline --help-all               Spec utilities and synthetic smoke
-  autopipeline tree run [args...]                Extracted-kernel search
+  autopipeline kernel run [args...]              Extracted-kernel search from source
   autopipeline prepare [args...]
   autopipeline profile [args...]
   autopipeline extract [args...]
@@ -53,19 +53,21 @@ Developer and compatibility tools:
   autopipeline verify [args...]
 
 Kernel compatibility tools require a source checkout and GPU dependencies.
+The old autopipeline tree run command is an alias for autopipeline kernel run.
 Existing commands and top-level scripts remain supported.
 Developer guide: docs/dev/README.md
 """
 
 
 TREE_HELP = """\
-AutoPipeline tree commands
+AutoPipeline extracted-kernel commands
 
 Usage:
-  autopipeline tree run [tree_optimize.py args...]
+  autopipeline kernel run [tree_optimize.py args...]
+  autopipeline tree run [args...]                 Compatibility alias
 
 Example:
-  autopipeline tree run --kernel-file workspace/kernel_matmul_1.py --run-name smoke-tree --beam-width 1 --max-rounds 1 --children-per-expansion 1 --bench-arg=--quick --executor-backend codex-app-server
+  autopipeline kernel run --kernel-file workspace/kernel_matmul_1.py --run-name smoke-tree --beam-width 1 --max-rounds 1 --children-per-expansion 1 --bench-arg=--quick --executor-backend codex-app-server
 """
 
 
@@ -179,7 +181,7 @@ def _doctor(argv: list[str]) -> int:
     checks["triton"] = {"available": triton_ok, "version": triton_version}
 
     # The installed pipeline runtime works outside a source checkout.
-    ok = importlib.util.find_spec("pipeline") is not None and importlib.util.find_spec("tree") is not None
+    ok = importlib.util.find_spec("autopipeline.pipeline") is not None and importlib.util.find_spec("autopipeline.search") is not None
     if require_gpu:
         ok = ok and torch_ok and triton_ok and cuda_available
 
@@ -229,12 +231,12 @@ def main(argv: list[str] | None = None) -> int:
         from .report import main as report_main
         return report_main(rest)
 
-    if command == "tree":
+    if command in {"kernel", "tree"}:
         if not rest or rest[0] in {"-h", "--help"}:
             print(TREE_HELP)
             return 0
         if rest[0] != "run":
-            print(f"ERROR: unknown tree command: {rest[0]}", file=sys.stderr)
+            print(f"ERROR: unknown kernel command: {rest[0]}", file=sys.stderr)
             return 2
         return _run_source_script("tree_optimize.py", rest[1:])
 

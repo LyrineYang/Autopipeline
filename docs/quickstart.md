@@ -18,7 +18,7 @@ autopipeline --version
 For an alpha wheel from the maintainers, replace the install line with the path to your file.
 
 ```sh
-python -m pip install '/path/to/auto_pipeline-1.4.0a6-py3-none-any.whl[cpu]'
+python -m pip install '/path/to/auto_pipeline-1.4.0a7-py3-none-any.whl[cpu]'
 ```
 
 | Environment | What to install |
@@ -100,7 +100,8 @@ model overrides. Other coding agents can use `--executor-command`.
 | `completed_no_improvement` | Search finished and the selected implementation verified. See the report for tried and rejected candidates. |
 | `failed` or `interrupted` | The run directory holds available evidence. Inspect the reason before starting a new run. |
 
-`promoted_pipeline/` contains the selected code when verification succeeds.
+`promoted_pipeline/` contains the selected code when verification succeeds. The report separates
+proposals, candidate executions, evaluations, budget skips, and agent calls.
 `autopipeline report RUN_DIR` shows the outcome and diagnostic paths. Its exit code reports whether
 the report could be generated. [Run artifact reference](dev/run-artifacts.md)
 

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .run_artifacts import count_candidates, format_counts, read_events, read_object, was_skipped_for_budget
+
 
 METRIC_LABELS = {
     "correctness": ("正确性", "", "gate"),
@@ -13,20 +15,23 @@ METRIC_LABELS = {
     "speedup": ("加速比", "x", "objective"),
     "throughput_tflops": ("吞吐量", "TFLOPS", "display"),
     "bandwidth_gb_s": ("带宽", "GB/s", "display"),
+    "forward_latency_ms": ("Forward latency", "ms", "objective"),
     "end_to_end_ms": ("端到端延迟", "ms", "objective"),
     "latency_ms": ("延迟", "ms", "objective"),
     "tokens_per_second": ("token 吞吐量", "tok/s", "objective"),
     "cost_per_token": ("每 token 成本", "", "objective"),
     "bench_time_seconds": ("基准测试耗时", "s", "cost"),
+    "ranking_score": ("Ranking score", "", "objective"),
     "score_value": ("评分值", "", "objective"),
     "score": ("评分值", "", "objective"),
 }
 
-LOWER_IS_BETTER = {"end_to_end_ms", "latency_ms", "cost_per_token", "bench_time_seconds"}
+LOWER_IS_BETTER = {"forward_latency_ms", "end_to_end_ms", "latency_ms", "cost_per_token", "bench_time_seconds"}
 DISPLAY_PRIORITY = [
     "throughput_tflops",
     "speedup_vs_pytorch",
     "speedup",
+    "forward_latency_ms",
     "end_to_end_ms",
     "throughput",
     "tokens_per_second",
@@ -36,6 +41,7 @@ DISPLAY_PRIORITY = [
 PRIMARY_PRIORITY = [
     "speedup_vs_pytorch",
     "speedup",
+    "forward_latency_ms",
     "end_to_end_ms",
     "throughput",
     "tokens_per_second",
@@ -60,10 +66,10 @@ class ViewPaths:
 
 def build_run_view(run_dir: Path) -> dict[str, Any]:
     run_dir = Path(run_dir).resolve()
-    state = _read_json(run_dir / "search_state.json")
-    events = _read_jsonl(run_dir / "tree_events.jsonl")
-    motifs = _read_jsonl(run_dir / "archive" / "motifs.jsonl")
-    family_summary = _read_json(run_dir / "archive" / "family_summary.json")
+    state = read_object(run_dir / "search_state.json")
+    events = read_events(run_dir / "tree_events.jsonl")
+    motifs = read_events(run_dir / "archive" / "motifs.jsonl")
+    family_summary = read_object(run_dir / "archive" / "family_summary.json")
 
     nodes = _dict_value(state.get("nodes"))
     task = _dict_value(state.get("task_snapshot"))
@@ -86,6 +92,7 @@ def build_run_view(run_dir: Path) -> dict[str, Any]:
         final_result=final_result,
         attempts=attempts,
         branches=branches,
+        search_counts=count_candidates(state, events),
         primary_metric=primary_metric,
         display_metric=display_metric,
     )
@@ -372,6 +379,7 @@ def render_dashboard_html(view: dict[str, Any], *, iteration_effect_name: str) -
     </div>
   </header>
   {outcome_html}
+  <p class="sub">{escape(format_counts(summary["search_counts"]))}</p>
   <div class="cards">{card_html}</div>
   <section class="panel">
     <h2>迭代效果</h2>
@@ -400,6 +408,8 @@ def render_summary_markdown(view: dict[str, Any]) -> str:
         f"# {summary.get('title', 'Run Dashboard')}",
         "",
         _summary_line(summary),
+        "",
+        format_counts(summary["search_counts"]),
         "",
         "## 关键结果",
         "",
@@ -520,7 +530,15 @@ def _build_attempts(
         accepted = bool(attempt.get("accepted"))
         score = _number(attempt.get("score"))
         status = str(node.get("status") or "")
-        if status == "failed":
+        if not attempt.get("evaluated") and was_skipped_for_budget(node):
+            attempt["outcome_key"] = "skipped_budget"
+            attempt["outcome"] = "Skipped by budget"
+            continue
+        if status == "queued":
+            attempt["outcome_key"] = "pending"
+            attempt["outcome"] = "Proposed"
+            continue
+        if status == "failed" and not attempt.get("evaluated"):
             attempt["outcome_key"] = "failed"
             attempt["outcome"] = "失败"
         elif not accepted:
@@ -561,13 +579,10 @@ def _attempt_from_node(
     hypothesis = _dict_value(node.get("hypothesis"))
     evaluation = _dict_value(node.get("evaluation_result"))
     metrics = _dict_value(evaluation.get("metrics"))
-    score = _number(evaluation.get("score"))
-    if score is None:
-        score = _number(fallback_score)
-    accepted = evaluation.get("accepted")
-    if accepted is None:
-        accepted = bool(fallback_accepted)
-    summary = str(evaluation.get("summary") or fallback_summary or node.get("error") or "")
+    score = _number(fallback_score if fallback_score is not None else evaluation.get("score"))
+    accepted = fallback_accepted if fallback_accepted is not None else evaluation.get("accepted")
+    execution = _dict_value(node.get("execution_result"))
+    summary = str(fallback_summary or evaluation.get("summary") or node.get("error") or execution.get("summary") or "")
     display_key = str(display_metric.get("key") or "score")
     primary_key = str(primary_metric.get("key") or "score")
     display_value = _number(metrics.get(display_key))
@@ -588,6 +603,7 @@ def _attempt_from_node(
         "scope": hypothesis.get("scope") or "",
         "target": hypothesis.get("target") or "",
         "accepted": bool(accepted),
+        "evaluated": bool(evaluation) or fallback_accepted is not None,
         "score": score,
         "display_metric": display_metric,
         "display_value": display_value,
@@ -633,8 +649,8 @@ def _build_branches(
                 "variant": hypothesis.get("implementation_variant") or hypothesis.get("title") or "",
                 "target": hypothesis.get("target") or "",
                 "status": node.get("status") or "",
-                "outcome": motif.get("outcome") or final_attempt.get("outcome_key") or "",
-                "attempt_count": len(node_attempts),
+                "outcome": final_attempt.get("outcome_key") or motif.get("outcome") or "",
+                "attempt_count": sum(item["outcome_key"] not in {"skipped_budget", "pending"} for item in node_attempts),
                 "final_score": final_attempt.get("score"),
                 "final_display_value": final_attempt.get("display_value"),
                 "human_summary": _branch_summary(node_id, hypothesis, final_attempt),
@@ -653,10 +669,11 @@ def _build_run_summary(
     final_result: dict[str, Any],
     attempts: list[dict[str, Any]],
     branches: list[dict[str, Any]],
+    search_counts: dict[str, int | None],
     primary_metric: dict[str, Any],
     display_metric: dict[str, Any],
 ) -> dict[str, Any]:
-    non_baseline = [item for item in attempts if item.get("outcome_key") != "baseline"]
+    non_baseline = [item for item in attempts if item.get("outcome_key") not in {"baseline", "skipped_budget", "pending"}]
     kept = [item for item in non_baseline if item.get("outcome_key") == "kept"]
     failed = [
         item
@@ -664,15 +681,18 @@ def _build_run_summary(
         if item.get("outcome_key") in {"failed", "timeout", "rejected_compile", "rejected_runtime", "rejected_correctness"}
     ]
     reverted = [item for item in non_baseline if item not in kept and item not in failed]
-    direction = str(display_metric.get("direction") or "higher")
     baseline = next((item for item in attempts if item.get("outcome_key") == "baseline"), None)
-    best = None
-    for item in attempts:
-        value = _number(item.get("display_value"))
-        if value is None or not item.get("accepted"):
-            continue
-        if best is None or _is_better(value, _number(best.get("display_value")), direction):
-            best = item
+    memory = _dict_value(state.get("root_memory"))
+    best_node_id = final_result.get("best_node_id") or memory.get("best_node_id")
+    selected = _dict_value(_dict_value(state.get("nodes")).get(best_node_id))
+    selected_evaluation = _dict_value(selected.get("evaluation_result"))
+    selected_value = _number(_dict_value(selected_evaluation.get("metrics")).get(display_metric["key"]))
+    selected_score = _number(selected_evaluation.get("score"))
+    if selected_value is None and display_metric["key"] in {"score", "score_value", "ranking_score"}:
+        selected_value = selected_score
+    selected_step = next(
+        (item for item in attempts if item["branch_id"] == best_node_id and item["score"] == selected_score), None,
+    )
     usage = _dict_value(budget.get("agent_usage"))
     title = _dashboard_title(task)
     return {
@@ -696,11 +716,12 @@ def _build_run_summary(
             "display_value": baseline.get("display_value") if baseline else None,
         },
         "best": {
-            "node_id": best.get("branch_id") if best else final_result.get("best_node_id"),
-            "experiment_index": best.get("experiment_index") if best else None,
-            "score": best.get("score") if best else state.get("root_memory", {}).get("best_score"),
-            "display_value": best.get("display_value") if best else None,
+            "node_id": best_node_id,
+            "experiment_index": selected_step["experiment_index"] if selected_step else None,
+            "score": selected_score if selected_score is not None else memory.get("best_score"),
+            "display_value": selected_value,
         },
+        "search_counts": search_counts,
         "counts": {
             "实验次数": len(non_baseline),
             "变更被采纳": len(kept),
@@ -968,32 +989,6 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict):
-            records.append(record)
-    return records
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

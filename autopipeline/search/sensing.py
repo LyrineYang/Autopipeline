@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from .types import RootMemory, SearchNode, TaskSnapshot
-from .verifier import build_verifier_summary
+from .feedback import build_agent_feedback
 
 
 @dataclass(slots=True)
@@ -189,7 +189,7 @@ class SensingRuntime:
             parent=self.parent,
             node=self.node,
         )
-        verifier = build_verifier_summary(
+        verifier = build_agent_feedback(
             task_snapshot=self.task_snapshot,
             root=self.root,
             recent_probe_results=recent_probe_results,
@@ -295,7 +295,7 @@ class SensingRuntime:
             parent=self.parent,
             node=self.node,
         )
-        verifier = build_verifier_summary(
+        verifier = build_agent_feedback(
             task_snapshot=self.task_snapshot,
             root=self.root,
             recent_probe_results=recent_probe_results,
@@ -784,6 +784,7 @@ class SensingRuntime:
 
 
 _PIPELINE_SIGNAL_RULES: dict[str, tuple[str, str]] = {
+    "forward_latency_ms": ("forward latency", "lower"),
     "end_to_end_ms": ("end-to-end latency", "lower"),
     "step_time_ms": ("step latency", "lower"),
     "latency_ms": ("latency", "lower"),

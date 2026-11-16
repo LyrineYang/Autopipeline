@@ -138,9 +138,9 @@ def build_planner_payload(
                     "recommended_scope": "kernel",
                     "scope_options": ["kernel"],
                     "exploration_bias": "balanced",
-                    "branch_budget": {"children": 2, "beam_width": 2, "rounds": 2},
+                    "branch_budget": {"children": 2, "beam_width": 2, "max_tree_depth": 2, "max_local_iterations": 1},
                     "resource_hint": {"tier": "balanced", "notes": ["short resource note"]},
-                    "stop_conditions": ["one short stopping rule"],
+                    "stop_guidance": ["one short suggestion for when to stop editing"],
                 },
                 "branch_cards": [
                     {
@@ -369,7 +369,7 @@ def build_execution_prompt(
         f"Focus target: {node.planner_context.get('focus_target', task_snapshot.target_path)}\n"
         f"Scope summary: {node.planner_context.get('scope_summary', 'none')}\n"
         f"Scope context files: {', '.join(str(item) for item in scope_context_files) if scope_context_files else 'none'}\n"
-        f"Stop conditions: {', '.join(node.planner_context.get('stop_conditions', [])) if node.planner_context.get('stop_conditions') else 'none'}\n"
+        f"Stop guidance: {', '.join(node.planner_context.get('stop_guidance') or node.planner_context.get('stop_conditions') or []) or 'none'}\n"
         f"Frozen decisions: {', '.join(node.planner_context.get('frozen_decisions', [])) if node.planner_context.get('frozen_decisions') else 'none'}\n"
         "Rules:\n"
         "- Only modify allowed editable files inside the sandbox.\n"

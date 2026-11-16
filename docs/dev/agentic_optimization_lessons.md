@@ -1,5 +1,7 @@
 # Agentic Optimization Lessons
 
+> Historical design notes. For current paths and behavior, see [Architecture](../architecture.md).
+
 这份文档把 Hermes 和其他成熟 agent / experiment orchestration 系统里的可借鉴机制，映射到本仓库的 tree framework。
 
 它不是临时实验记录，也不是实现计划文件。它只回答一个设计问题：
@@ -146,18 +148,18 @@ DSPy 的参考价值在 metric-driven prompt / program optimization：
 
 ### 已实现或已有雏形
 
-- [tree/search.py](../../tree/search.py) 管理 baseline、frontier、branch expansion、pruning、promotion。
-- [tree/planner.py](../../tree/planner.py) 产出 `PlannerPacket`，里面包括 static prior、hardware context、history context、`RegionGraph`、`BottleneckCard`、`SearchPolicyHint`、Branch Cards。
-- [tree/branch_engine.py](../../tree/branch_engine.py) 在一个固定 branch identity 下运行短 keep/revert loop。
-- [tree/search.py](../../tree/search.py) 已经支持受控 parallel branch execution，并在 agent / probe budget 存在时收紧并行。
-- [tree/roles.py](../../tree/roles.py) 和 [tree/types.py](../../tree/types.py) 已经提供 role-based config，planner / executor / reflector 可以有各自 backend、provider、model、timeout 和 reasoning 配置。
-- [tree/agent_backend.py](../../tree/agent_backend.py)、[tree/codex_app_server.py](../../tree/codex_app_server.py) 和 [tree/codex_session.py](../../tree/codex_session.py) 已经提供 Codex app-server session backend，同时保留 legacy command bridge。
-- [tree/command.py](../../tree/command.py) 给外部 planner / executor / reflector 写 prompt、payload、telemetry、output、stdout、stderr、status，并服务 file-bridge probe 请求。
-- [tree/sensing.py](../../tree/sensing.py) 提供 passive snapshot、diagnostic probes、probe history、verifier summary。
-- [tree/budget.py](../../tree/budget.py) 记录 agent 使用量、API 调用量、令牌使用量、推理成本、probe 使用量、family 成败。
-- [tree/archive.py](../../tree/archive.py) 已经提供 run-local motif archive、family summary 和 planner prior。
-- [tree/viewer.py](../../tree/viewer.py) 已经能把 tree run 转成 summary、JSONL、SVG 和 HTML dashboard。
-- [pipeline/task.py](../../pipeline/task.py) 已经提供 spec-driven generic pipeline workspace task 的雏形。
+- [tree/search.py](../../autopipeline/search/engine.py) 管理 baseline、frontier、branch expansion、pruning、promotion。
+- [tree/planner.py](../../autopipeline/search/planner.py) 产出 `PlannerPacket`，里面包括 static prior、hardware context、history context、`RegionGraph`、`BottleneckCard`、`SearchPolicyHint`、Branch Cards。
+- [tree/branch_engine.py](../../autopipeline/search/branch_engine.py) 在一个固定 branch identity 下运行短 keep/revert loop。
+- [tree/search.py](../../autopipeline/search/engine.py) 已经支持受控 parallel branch execution，并在 agent / probe budget 存在时收紧并行。
+- [tree/roles.py](../../autopipeline/search/roles.py) 和 [tree/types.py](../../autopipeline/search/types.py) 已经提供 role-based config，planner / executor / reflector 可以有各自 backend、provider、model、timeout 和 reasoning 配置。
+- [tree/agent_backend.py](../../autopipeline/search/agent_backend.py)、[tree/codex_app_server.py](../../autopipeline/search/codex_app_server.py) 和 [tree/codex_session.py](../../autopipeline/search/codex_session.py) 已经提供 Codex app-server session backend，同时保留 legacy command bridge。
+- [tree/command.py](../../autopipeline/search/command.py) 给外部 planner / executor / reflector 写 prompt、payload、telemetry、output、stdout、stderr、status，并服务 file-bridge probe 请求。
+- [tree/sensing.py](../../autopipeline/search/sensing.py) 提供 passive snapshot、diagnostic probes、probe history、verifier summary。
+- [tree/budget.py](../../autopipeline/search/budget.py) 记录 agent 使用量、API 调用量、令牌使用量、推理成本、probe 使用量、family 成败。
+- [tree/archive.py](../../autopipeline/search/archive.py) 已经提供 run-local motif archive、family summary 和 planner prior。
+- [tree/viewer.py](../../autopipeline/search/viewer.py) 已经能把 tree run 转成 summary、JSONL、SVG 和 HTML dashboard。
+- [pipeline/task.py](../../autopipeline/pipeline/task.py) 已经提供 spec-driven generic pipeline workspace task 的雏形。
 - [kernelbench/task.py](../../kernelbench/task.py) 已经把 KernelBench problem surface 接到 tree task 协议。
 
 ### 仍未完成的缺口
@@ -373,7 +375,7 @@ TREE_AGENT_TIMEOUT_SECONDS=...
 
 把“agent command timed out”变成可定位的问题。
 
-当前 [tree/command.py](../../tree/command.py) 已经有：
+当前 [tree/command.py](../../autopipeline/search/command.py) 已经有：
 
 - `command_status.json`
 - `stdout.log`

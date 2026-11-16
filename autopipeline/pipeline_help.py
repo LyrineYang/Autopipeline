@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 
-from tree.roles import add_role_config_args
+from autopipeline.search.roles import add_role_config_args
 from .workloads import EXAMPLES
 
 

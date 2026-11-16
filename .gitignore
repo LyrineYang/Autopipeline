@@ -10,9 +10,9 @@ wheels/
 .venv
 worktrees/
 
-# Agent prompt files
+# Local agent notes
 CLAUDE.md
-AGENTS.md
+AGENTS.local.md
 
 # Experimental artifacts
 dev/

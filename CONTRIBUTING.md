@@ -75,7 +75,7 @@ uv run autopipeline doctor
 uv run autopipeline prepare
 uv run autopipeline profile --model models/gpt2.py --class-name GPT2 --input-shape 1,1024 --dtype float16
 uv run autopipeline extract --top 1
-uv run autopipeline tree run --kernel-file workspace/kernel_matmul_1.py --run-name smoke-tree --beam-width 1 --max-rounds 1 --children-per-expansion 1 --bench-arg=--quick --executor-backend codex-app-server
+uv run autopipeline kernel run --kernel-file workspace/kernel_matmul_1.py --run-name smoke-tree --beam-width 1 --max-rounds 1 --children-per-expansion 1 --bench-arg=--quick --executor-backend codex-app-server
 ```
 
 ## Branch ownership

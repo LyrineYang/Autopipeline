@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 import sys
 
-from tree.viewer import write_run_view
+from autopipeline.search.run_artifacts import format_counts
+from autopipeline.search.viewer import write_run_view
 from .presentation import load_receipt, outcome, print_outcome, next_steps
 
 
@@ -47,12 +48,7 @@ def main(argv: list[str] | None = None) -> int:
             print_outcome(receipt)
         else:
             print(summary["title"])
-        print(
-            f"{summary['counts']['实验次数']} 次实验 | "
-            f"{summary['counts']['变更被采纳']} 次变更被采纳 | "
-            f"{summary['counts']['变更被回退']} 次变更被回退 | "
-            f"{summary['counts']['失败次数']} 次失败"
-        )
+        print(format_counts(summary["search_counts"]))
         print(f"Dashboard: {paths.dashboard}")
         print(f"Summary: {paths.summary_markdown}")
         if receipt is not None:

@@ -2,7 +2,7 @@
 
 ## Resume Here
 
-Use `LyrineYang/Autopipeline` on `main`. The product baseline is `1d59082` (1.4.0a6).
+Use `LyrineYang/Autopipeline` on `main` with AutoPipeline 1.4.0a7.
 Use an authenticated GitHub account with repository access. Record the checkout SHA in each experiment. Level 5 and apimetric research are maintained
 separately from the product. [Source repository](https://github.com/LyrineYang/Autopipeline)
 
@@ -18,8 +18,8 @@ reference, correctness checks, profiler, budget accounting, and final recheck in
 
 ## Evidence Already Available
 
-- The product baseline passed 156 tests. An installed wheel ran the CPU baseline, report,
-  export, fresh verification, and invalid-candidate rejection outside the checkout.
+- The a6 CPU baseline was verified from an installed wheel outside the checkout. The a7
+  acceptance path exercises the same baseline, report, export, recheck, and rejection flow.
 - A controlled two-round acceptance run used four local executor calls. Both surviving parents
   received a second-round trial, and the exported candidate passed rechecking.
 - A prior real-agent CPU pilot used three executor calls per arm. All six candidates passed
@@ -31,10 +31,10 @@ reference, correctness checks, profiler, budget accounting, and final recheck in
 | Single path | 3 | 232.8 s | 573,227 | 453,376 |
 | Tree search | 3 | 243.9 s | 646,679 | 527,744 |
 
-The pilot recorded different performance verdicts for byte-identical candidates. The evaluator
-compares each candidate against a newly measured reference, while search orders accepted nodes
-by their recorded absolute score. Measure baseline variability before interpreting small gains.
-[Search engine](../../tree/search.py) · [Native evaluator](../../autopipeline/evaluate.py)
+The a6 pilot recorded different performance verdicts for byte-identical candidates. In a7 the
+native workflow ranks qualifying candidates by paired speedup from each reference/candidate
+comparison. Measure baseline variability and interleave finalist rechecks on the same GPU.
+[Search engine](../../autopipeline/search/engine.py) · [Native evaluator](../../autopipeline/evaluate.py)
 
 Local pilot outputs and release builds lived under the ignored `workspace/` directory.
 A fresh clone can build the alpha wheel with `python -m pip wheel . --no-deps -w dist`.

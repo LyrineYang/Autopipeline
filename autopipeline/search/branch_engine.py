@@ -53,22 +53,7 @@ class BranchEngine:
         self._run_local_loop(node, parent, branch_iterations)
 
     def _run_single_step(self, node: SearchNode, parent: SearchNode) -> None:
-        node.execution_result = self.agent.execute(
-            self.task,
-            self.task_snapshot,
-            self.root_memory,
-            parent,
-            node,
-        )
-        self.log_event(
-            "execution_completed",
-            {
-                "node_id": node.id,
-                "parent_id": parent.id,
-                "status": node.execution_result.status,
-                "changed": node.execution_result.changed,
-            },
-        )
+        node.execution_result = self._execute(node, parent)
         if node.execution_result.status.lower() != "completed":
             node.status = "failed"
             node.error = node.execution_result.summary
@@ -80,7 +65,7 @@ class BranchEngine:
             {
                 "node_id": node.id,
                 "accepted": node.evaluation_result.accepted,
-                "score": node.evaluation_result.score,
+                "score": node.evaluation_result.ranking_score,
                 "summary": node.evaluation_result.summary,
             },
         )
@@ -98,7 +83,7 @@ class BranchEngine:
 
     def _run_local_loop(self, node: SearchNode, parent: SearchNode, branch_iterations: int) -> None:
         branch_best_score = (
-            parent.evaluation_result.score
+            parent.evaluation_result.ranking_score
             if parent.evaluation_result is not None and parent.evaluation_result.accepted
             else float("-inf")
         )
@@ -129,6 +114,7 @@ class BranchEngine:
                         metadata={"local_history": local_history, "budget_exhausted": True},
                     )
                     node.status = "pruned"
+                    node.prune_reason = "budget_exhausted"
                     return
                 break
             node.planner_context["local_iteration"] = iteration
@@ -139,23 +125,7 @@ class BranchEngine:
             node.planner_context["local_history"] = local_history[-3:]
             self._prepare_execution_surface(node, parent)
 
-            execution_result = self.agent.execute(
-                self.task,
-                self.task_snapshot,
-                self.root_memory,
-                parent,
-                node,
-            )
-            self.log_event(
-                "execution_completed",
-                {
-                    "node_id": node.id,
-                    "parent_id": parent.id,
-                    "local_iteration": iteration,
-                    "status": execution_result.status,
-                    "changed": execution_result.changed,
-                },
-            )
+            execution_result = self._execute(node, parent, iteration=iteration)
 
             if execution_result.status.lower() != "completed":
                 local_history.append(
@@ -188,7 +158,7 @@ class BranchEngine:
                     "node_id": node.id,
                     "local_iteration": iteration,
                     "accepted": evaluation_result.accepted,
-                    "score": evaluation_result.score,
+                    "score": evaluation_result.ranking_score,
                     "summary": evaluation_result.summary,
                 },
             )
@@ -198,14 +168,14 @@ class BranchEngine:
                     "status": execution_result.status,
                     "changed": execution_result.changed,
                     "accepted": evaluation_result.accepted,
-                    "score": evaluation_result.score,
+                    "score": evaluation_result.ranking_score,
                     "summary": evaluation_result.summary,
                 }
             )
 
-            if evaluation_result.accepted and evaluation_result.score > branch_best_score:
+            if evaluation_result.accepted and evaluation_result.ranking_score > branch_best_score:
                 checkpoint_candidate(self.task, node, best_candidate_path)
-                branch_best_score = evaluation_result.score
+                branch_best_score = evaluation_result.ranking_score
                 best_evaluation = evaluation_result
                 best_execution = execution_result
             else:
@@ -248,6 +218,7 @@ class BranchEngine:
                 node.evaluation_result = restored_evaluation
                 self._prepare_execution_surface(node, parent)
                 node.status = "pruned"
+                node.prune_reason = "no_improvement"
                 return
             node.execution_result = ExecutionResult(
                 status="failed",
@@ -290,6 +261,15 @@ class BranchEngine:
         node.status = "completed"
         self.merge_completed(node)
 
+    def _execute(
+        self, node: SearchNode, parent: SearchNode, *, iteration: int = 1,
+    ) -> ExecutionResult:
+        context = {"node_id": node.id, "parent_id": parent.id, "local_iteration": iteration}
+        self.log_event("execution_started", context)
+        result = self.agent.execute(self.task, self.task_snapshot, self.root_memory, parent, node)
+        self.log_event("execution_completed", {**context, "status": result.status, "changed": result.changed})
+        return result
+
     def _prepare_execution_surface(self, node: SearchNode, parent: SearchNode) -> None:
         prepare_surface = getattr(self.task, "prepare_execution_surface", None)
         if callable(prepare_surface):
@@ -314,7 +294,7 @@ class BranchEngine:
     def _branch_iteration_limit(self, parent: SearchNode, node: SearchNode) -> int:
         if not role_uses_agent(self.config, "executor"):
             return 1
-        planner_limit = node.planner_context.get("branch_budget_rounds")
+        planner_limit = node.planner_context.get("max_local_iterations")
         planner_limit = int(planner_limit) if planner_limit is not None else None
         provider = getattr(self.task, "branch_iteration_limit", None)
         if not callable(provider):
@@ -373,3 +353,4 @@ class BranchEngine:
             metadata={"budget_exhausted": True},
         )
         node.status = "pruned"
+        node.prune_reason = "budget_exhausted"

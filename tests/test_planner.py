@@ -7,10 +7,10 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from tree.planner import Planner, PlannerStepError
-from tree.prior import kernel_optimization_prior
-from tree.prompts import build_planner_prompt
-from tree.types import AgentRoleConfig, EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
+from autopipeline.search.planner import Planner, PlannerStepError
+from autopipeline.search.prior import kernel_optimization_prior
+from autopipeline.search.prompts import build_planner_prompt
+from autopipeline.search.types import AgentRoleConfig, EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 
 
 class SeedOnlyTask:

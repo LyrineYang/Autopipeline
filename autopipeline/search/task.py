@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from .types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 
@@ -74,59 +74,3 @@ class OptimizationTask(Protocol):
         root: RootMemory,
         limit: int,
     ) -> list[Hypothesis]: ...
-
-    def planner_context(
-        self,
-        parent: SearchNode,
-        root: RootMemory,
-        limit: int,
-        *,
-        upper_bounds: dict[str, int] | None = None,
-    ) -> dict[str, Any]: ...
-
-    def prepare_execution_surface(
-        self,
-        node: SearchNode,
-        parent: SearchNode | None,
-    ) -> None: ...
-
-    def handle_probe(
-        self,
-        request: dict[str, Any],
-        *,
-        cwd: Path,
-        node: SearchNode | None,
-        parent: SearchNode | None,
-    ) -> dict[str, Any]: ...
-
-    def checkpoint_candidate(self, node: SearchNode, checkpoint_path: Path) -> None: ...
-
-    def restore_candidate(self, node: SearchNode, checkpoint_path: Path) -> None: ...
-
-    def build_python_probe_command(
-        self,
-        *,
-        cwd: Path,
-        script_path: Path,
-        args: list[str],
-    ) -> list[str]: ...
-
-    def probe_environment(self, *, cwd: Path) -> dict[str, str]: ...
-
-    def build_theoretical_limit_inputs(
-        self,
-        *,
-        cwd: Path,
-        node: SearchNode | None,
-        parent: SearchNode | None,
-    ) -> dict[str, Any]: ...
-
-    def augment_verifier_summary(
-        self,
-        *,
-        task_snapshot: TaskSnapshot,
-        root: RootMemory,
-        recent_probe_results: list[dict[str, Any]],
-        parent: SearchNode | None,
-        node: SearchNode | None,
-    ) -> dict[str, Any]: ...

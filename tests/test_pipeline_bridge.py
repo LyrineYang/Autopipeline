@@ -1,21 +1,54 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from pipeline.task import (
+import autopipeline
+
+from autopipeline.pipeline.task import (
     PipelineTask,
     setup_pipeline_workspace,
 )
-from pipeline.smoke import create_pipeline_smoke_fixture, run_pipeline_smoke
-from tree.planner import Planner
-from tree.sensing import build_sensing_summary
-from tree.types import Hypothesis, RootMemory, SearchNode
+from autopipeline.pipeline.smoke import create_pipeline_smoke_fixture, run_pipeline_smoke
+from autopipeline.search.planner import Planner
+from autopipeline.project import initialize
+from autopipeline.search.sensing import SensingRuntime, build_sensing_summary
+from autopipeline.search.types import Hypothesis, RootMemory, SearchNode
 
 
 class PipelineBridgeTests(unittest.TestCase):
+    def test_evaluator_subprocess_can_import_the_source_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = initialize(root / "workload", source=None, device="cpu", dtype="float32")
+            task = PipelineTask(repo_root=root, spec_path=spec)
+            env = task._command_env(sandbox=task.spec.workspace_source, node_dir=root)
+            self.assertEqual(
+                Path(env["PYTHONPATH"].split(os.pathsep)[0]),
+                Path(autopipeline.__file__).resolve().parent.parent,
+            )
+
+    def test_native_task_uses_default_probe_handlers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = initialize(root / "workload", source=None, device="cpu", dtype="float32")
+            task = PipelineTask(repo_root=root, spec_path=spec)
+            snapshot = task.snapshot()
+            runtime = SensingRuntime(
+                base_dir=root / "run", cwd=task.spec.workspace_source, task_snapshot=snapshot,
+                root=RootMemory(objective=snapshot.objective), task=task,
+            )
+            logs = root / "logs"
+            runtime.prepare("execute", logs)
+            result = runtime.run_probe_request("execute", logs, {"kind": "python", "code": "print('probe works')"})
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["data"]["stdout"].strip(), "probe works")
+            facts = runtime.run_probe_request("execute", logs, {"kind": "theoretical_limit_inputs"})
+            self.assertEqual(facts["status"], "completed")
+
     def test_final_verification_requires_fresh_valid_evidence(self):
         cases = [
             (["{python}", "-c", "pass"], False, "correctness_evidence_missing"),
@@ -274,8 +307,11 @@ class PipelineBridgeTests(unittest.TestCase):
             first = planner.build_packet(task, task.snapshot(), root_memory, parent, 2, upper_bounds=bounds)
             self.assertEqual(first.search_policy.branch_budget.children, 2)
             self.assertEqual(first.search_policy.branch_budget.beam_width, 2)
-            self.assertIsNone(first.search_policy.branch_budget.rounds)
-            self.assertEqual([card.idea_id for card in first.branch_cards], ["end-to-end-latency", "operator-cost"])
+            self.assertIsNone(first.search_policy.branch_budget.max_tree_depth)
+            self.assertIsNone(first.search_policy.branch_budget.max_local_iterations)
+            self.assertEqual([card.idea_id for card in first.branch_cards], ["forward-overhead", "operator-cost"])
+            self.assertIsNone(first.region_graph)
+            self.assertTrue(all(not card.work_unit for card in first.branch_cards))
             root_memory.rounds_completed = 1
             next_round = planner.build_packet(task, task.snapshot(), root_memory, parent, 2, upper_bounds=bounds)
             self.assertNotEqual(first.branch_cards[0].id, next_round.branch_cards[0].id)

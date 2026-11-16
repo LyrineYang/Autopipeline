@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from tree.budget import BudgetLedger
-from tree.planner import Planner
-from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
+from autopipeline.search.budget import BudgetLedger
+from autopipeline.search.planner import Planner
+from autopipeline.search.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
 
 
 class BudgetTask:

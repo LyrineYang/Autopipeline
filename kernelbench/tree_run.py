@@ -21,10 +21,10 @@ from kernelbench.task import (
     KernelBenchTask,
     default_kernelbench_tree_run_dir,
 )
-from tree.agent import CommandAgentAdapter
-from tree.roles import add_role_config_args, build_role_configs_from_args
-from tree.search import TreeSearchEngine
-from tree.types import SearchConfig
+from autopipeline.search.agent import CommandAgentAdapter
+from autopipeline.search.roles import add_role_config_args, build_role_configs_from_args
+from autopipeline.search.engine import TreeSearchEngine
+from autopipeline.search.types import SearchConfig
 
 
 def build_parser() -> argparse.ArgumentParser:

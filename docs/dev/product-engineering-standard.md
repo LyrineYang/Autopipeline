@@ -212,16 +212,16 @@ agent 的自述和 benchmark 的单个 PASS 字符串不能替代验证所需的
 
 | 优先级 | 当前依据与缺口 | 下一项实现及完成条件 |
 | --- | --- | --- |
-| P0：安装与发布可信 | CI 已有 wheel 外部目录初始化检查，但实际 CPU 集成测试仍在源码目录运行 | 把 CPU 评估、报告、导出复验加入安装包外部目录验收，阻止源码导入掩盖漏打包 |
+| P0：安装与发布可信 | CI 在源码目录之外安装 wheel，执行 CPU 评估、报告、导出和复验 | 案例或打包改动后复用安装验收，并记录具体提交与版本 |
 | P0：构建声明正确 | `pyproject.toml` 使用字符串许可证及 `license-files`，构建下限却是 `setuptools>=69`；PyPA 对这些新字段列出的 setuptools 支持起点为 77.0.3 | 在构建变更中校正下限并验证隔离构建；本次规范文档未修改构建配置 |
 | P1：公开契约 | 已有 CLI 和协议文档；`OptimizationTask` 仍直接使用 `SearchNode`、`RootMemory` 等内部类型 | 先列公开接口与稳定性，再设计最小外部 adapter 契约；用独立扩展验证，不一次公开全部内部类型 |
-| P1：分发命名空间 | wheel 仍包含通用顶层包名 `tree`、`pipeline` | 审计导入消费者和冲突，逐步收敛命名空间；旧入口通过兼容层迁移，独立 benchmark 仍可调用 |
+| P1：分发命名空间 | wheel 仅安装 `autopipeline`，旧 Python 导入保留在源码检出 | wheel 文件清单和独立安装流程验证命名空间与兼容入口 |
 | P1：产物兼容 | 验证报告已有 `verification-report/v1`；不能因此推断所有配置、结果与导出都具备升级契约 | 逐类登记 schema 和读写版本，补历史产物的读取与拒绝行为检查 |
 | P2：体验持续收敛 | 默认帮助与开发入口已分层；尚不能据此认定接口、依赖和执行边界全部达标 | 按 U1、O1 逐项复核错误、取消、预算与恢复语义，每次围绕一个完整用户场景交付 |
 
 构建后端版本依据见 [PyPA 的许可证元数据支持表](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license-and-license-files)。
 现有文件依据：[包配置](../../pyproject.toml)、[CI](../../.github/workflows/ci.yml)、
-[任务协议](../../tree/task.py)、[验证后端](../../pipeline/verification_backend.py)。
+[任务协议](../../autopipeline/search/task.py)、[验证后端](../../autopipeline/pipeline/verification_backend.py)。
 
 建议的依赖方向是：CLI/未来 SDK 调用同一应用逻辑；应用逻辑编排核心；
 adapter 实现核心定义的协议；独立 benchmark 经 adapter 调用产品。

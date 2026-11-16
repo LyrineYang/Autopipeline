@@ -60,6 +60,13 @@ Read [program.md](../program.md) instead if you are operating the original long-
 - owns:
   - one compressed node insight
 
+## Planner Limits
+
+Within `search_policy.branch_budget`, `max_tree_depth` caps expansion depth and
+`max_local_iterations` caps edit attempts inside a branch. Older planner outputs can use
+`rounds` to set both. `children` and `beam_width` constrain expansion and retention.
+`stop_guidance` is advisory text for the executor. The search engine enforces the numeric caps.
+
 ## Backend Contract
 
 Codex roles default to the app-server session backend. The runtime creates or
@@ -126,7 +133,7 @@ specific model provider protocol.
 
 ### Command Log Files
 
-For every external command, [tree/command.py](../tree/command.py)
+For every external command, [autopipeline/search/command.py](../autopipeline/search/command.py)
 writes a per-step log directory containing:
 
 - `prompt.txt`

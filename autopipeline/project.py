@@ -62,15 +62,15 @@ def initialize(destination: Path, *, source: Path | None, device: str, dtype: st
                 "check_seeds": 3, "atol": 1e-5, "rtol": 1e-4}
     write_json(workspace / "workload.json", workload)
     command = ["{python}", "-m", "autopipeline.evaluate"]
-    spec = {"name": destination.name, "objective": "Reduce measured end-to-end inference latency while preserving all outputs.",
+    spec = {"name": destination.name, "objective": "Reduce measured model forward latency while preserving all outputs.",
             "workspace_source": "workload", "target_path": "candidate.py", "editable_paths": ["candidate.py"],
             "reference_paths": ["reference.py", "workload.json"],
             "constraints": ["Edit only candidate.py; preserve ModelNew constructor and state_dict compatibility.",
                             "Do not change the reference, inputs, evaluator, metrics, or profiler artifacts.",
                             "No cached outputs, input-specific constants, or skipped computation."],
-            "objective_signals": ["end_to_end_ms", "throughput", "peak_vram_mb"],
+            "objective_signals": ["forward_latency_ms", "throughput", "peak_vram_mb"],
             "evaluate_command": command, "final_verify_command": command,
-            "metrics_path": "metrics.json", "score_metric": "end_to_end_ms", "score_direction": "lower",
+            "metrics_path": "metrics.json", "score_metric": "forward_latency_ms", "score_direction": "lower",
             "timeout_seconds": 600, "metadata": {"example": "custom" if source else example, "runtime": "pytorch", "numerical_tolerances": {"atol": 1e-5, "rtol": 1e-4}}}
     write_json(destination / "pipeline.json", spec)
     (destination / "README.md").write_text(

@@ -7,7 +7,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from pipeline.verification_backend import ExecutableRunRequest, ExecutableVerificationBackend
+from autopipeline.pipeline.verification_backend import ExecutableRunRequest, ExecutableVerificationBackend
 
 
 class VerificationBackendTests(unittest.TestCase):
@@ -23,7 +23,9 @@ class VerificationBackendTests(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 self.assertFalse(self.verify_metrics(reference, {**candidate, field: value})["accepted"])
 
-    def verify_metrics(self, reference, candidate, *, score_metric="throughput", score_direction="higher"):
+    def verify_metrics(
+        self, reference, candidate, *, score_metric="throughput", score_direction="higher", rank_by_speedup=False,
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             requests = []
@@ -39,7 +41,7 @@ class VerificationBackendTests(unittest.TestCase):
                 ))
             report = ExecutableVerificationBackend().verify(
                 reference=requests[0], candidate=requests[1], artifact_dir=root / "artifacts",
-                score_metric=score_metric, score_direction=score_direction,
+                score_metric=score_metric, score_direction=score_direction, rank_by_speedup=rank_by_speedup,
             )
             saved = json.loads((root / "artifacts" / "verification_report.json").read_text())
             self.assertEqual(saved["accepted"], report["accepted"])
@@ -158,6 +160,23 @@ class VerificationBackendTests(unittest.TestCase):
                     self.assertEqual(report["accepted"], accepted)
                     if not accepted:
                         self.assertEqual(report["failure_reason"], "performance_regressed")
+
+    def test_native_ranking_compares_each_candidate_to_its_own_reference(self):
+        valid = {"correctness": "PASS", "output_value": [1]}
+        def evaluate(reference_ms, candidate_ms):
+            return self.verify_metrics(
+                {**valid, "forward_latency_ms": reference_ms},
+                {**valid, "forward_latency_ms": candidate_ms},
+                score_metric="forward_latency_ms", score_direction="lower", rank_by_speedup=True,
+            )
+
+        first, second = evaluate(100, 80), evaluate(30, 27)
+        self.assertTrue(first["accepted"] and second["accepted"])
+        self.assertEqual(first["performance"]["ranking_score"], 1.25)
+        self.assertGreater(first["performance"]["ranking_score"], second["performance"]["ranking_score"])
+        self.assertEqual(first["performance"]["candidate_score_raw"], 80)
+        self.assertEqual(evaluate(30, 31)["failure_reason"], "performance_regressed")
+        self.assertEqual(evaluate(30, 0)["failure_reason"], "performance_evidence_missing_or_invalid")
 
     def test_invalid_tolerance_configuration_is_rejected(self):
         for value in (-1, float("nan"), float("inf")):

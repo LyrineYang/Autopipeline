@@ -5,11 +5,11 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-from tree.agent import CommandAgentAdapter
-from tree.autokernel import AutoKernelTask
-from tree.roles import add_role_config_args, build_role_configs_from_args
-from tree.search import TreeSearchEngine
-from tree.types import SearchConfig
+from autopipeline.search.agent import CommandAgentAdapter
+from kernel_tools.task import AutoKernelTask
+from autopipeline.search.roles import add_role_config_args, build_role_configs_from_args
+from autopipeline.search.engine import TreeSearchEngine
+from autopipeline.search.types import SearchConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,8 +65,8 @@ def default_run_dir(repo_root: Path, kernel_path: Path) -> Path:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    from tree.agent_backend import role_uses_app_server
-    from tree.roles import role_config_for
+    from autopipeline.search.agent_backend import role_uses_app_server
+    from autopipeline.search.roles import role_config_for
     roles = build_role_configs_from_args(args)
     if not args.executor_command and not role_uses_app_server(role_config_for(roles, "executor"), args.executor_command):
         parser.error("An executor is required: --executor-backend codex-app-server or --executor-command")

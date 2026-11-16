@@ -176,7 +176,7 @@ def evaluate(workspace: Path, reference_workspace: Path, config: dict, *, refere
     latency_ms = statistics.median(samples)
     return {"correctness": "PASS", **errors,
             "numerical_atol": config["atol"], "numerical_rtol": config["rtol"],
-            "end_to_end_ms": latency_ms, "latency_samples_ms": samples,
+            "forward_latency_ms": latency_ms, "end_to_end_ms": latency_ms, "latency_samples_ms": samples,
             "throughput": 1000 / latency_ms, "peak_vram_mb": peak,
             "measurement_scope": "model forward, including host dispatch and device synchronization; excluding input preparation",
             "profiler": profiler, "device": device,

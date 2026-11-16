@@ -58,9 +58,9 @@ This one is intentionally split from the calculation itself:
 
 In code, these are implemented by:
 
-- built-in file, command, Python, and theoretical-limit probes in [tree/sensing.py](../tree/sensing.py)
-- task-specific AutoKernel probes in [tree/autokernel_probes.py](../tree/autokernel_probes.py)
-- pipeline metric probes in [pipeline/task.py](../pipeline/task.py)
+- built-in file, command, Python, and theoretical-limit probes in [autopipeline/search/sensing.py](../autopipeline/search/sensing.py)
+- task-specific AutoKernel probes in [kernel_tools/probes.py](../kernel_tools/probes.py)
+- pipeline metric probes in [autopipeline/pipeline/task.py](../autopipeline/pipeline/task.py)
 
 Probe execution is budget-aware. `BudgetLedger` can reject new probes after
 `--max-probe-calls` is exhausted, and sensing records those rejections as
@@ -80,13 +80,13 @@ In plain language, the runtime works like this:
 
 That is the current active-sensing loop.
 
-Mechanically, [tree/command.py](../tree/command.py)
+Mechanically, [autopipeline/search/command.py](../autopipeline/search/command.py)
 does the legacy file serving loop. It initializes empty probe request/result
 files, launches the role command, notices when `TREE_PROBE_REQUESTS_PATH`
 changes, calls `SensingRuntime.serve_pending(...)`, and finally calls
 `finalize(...)` once the subprocess exits.
 
-For Codex app-server sessions, [tree/codex_dynamic_tools.py](../tree/codex_dynamic_tools.py)
+For Codex app-server sessions, [autopipeline/search/codex_dynamic_tools.py](../autopipeline/search/codex_dynamic_tools.py)
 registers `run_sensing_probe` as a dynamic tool. It calls the same
 `SensingRuntime` probe handlers and records results into the same manifest and
 history files. Dynamic tools are an additional transport, not a replacement for

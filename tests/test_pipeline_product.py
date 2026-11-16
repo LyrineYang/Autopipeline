@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 from autopipeline.cli import main
 from autopipeline.project import initialize
-from pipeline.task import PipelineSpec
-from pipeline.smoke import create_pipeline_smoke_fixture
+from autopipeline.pipeline.task import PipelineSpec
+from autopipeline.pipeline.smoke import create_pipeline_smoke_fixture
 
 
 class PipelineProductTests(unittest.TestCase):

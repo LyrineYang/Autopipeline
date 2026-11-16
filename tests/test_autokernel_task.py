@@ -8,8 +8,8 @@ import json
 from pathlib import Path
 from unittest import mock
 
-from tree.autokernel import AutoKernelTask, parse_bench_output, parse_verify_output
-from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode
+from kernel_tools.task import AutoKernelTask, parse_bench_output, parse_verify_output
+from autopipeline.search.types import EvaluationResult, Hypothesis, RootMemory, SearchNode
 
 
 class AutoKernelTaskTests(unittest.TestCase):
@@ -94,7 +94,7 @@ class AutoKernelTaskTests(unittest.TestCase):
             """
         )
 
-        with mock.patch("tree.autokernel.subprocess.run") as run_mock:
+        with mock.patch("kernel_tools.task.subprocess.run") as run_mock:
             run_mock.return_value = subprocess.CompletedProcess(
                 args=["uv"],
                 returncode=0,
@@ -131,7 +131,7 @@ class AutoKernelTaskTests(unittest.TestCase):
         promoted_path.write_text(self.kernel_file.read_text(encoding="utf-8"), encoding="utf-8")
         self.task._last_promoted_path = promoted_path
 
-        with mock.patch("tree.autokernel.subprocess.run") as run_mock:
+        with mock.patch("kernel_tools.task.subprocess.run") as run_mock:
             run_mock.return_value = subprocess.CompletedProcess(
                 args=["python", "verify.py"],
                 returncode=0,
@@ -332,8 +332,8 @@ class AutoKernelTaskTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, '{"torch_version": "2.5.0", "triton_version": "3.3.0"}\n', "")
 
         with (
-            mock.patch("tree.autokernel_probes.detect_hardware_context", return_value={"gpu_name": "H100", "gpu_count": 1}),
-            mock.patch("tree.autokernel_probes.subprocess.run", side_effect=fake_run),
+            mock.patch("kernel_tools.probes.detect_hardware_context", return_value={"gpu_name": "H100", "gpu_count": 1}),
+            mock.patch("kernel_tools.probes.subprocess.run", side_effect=fake_run),
         ):
             result = self.task.handle_probe(
                 {"kind": "hardware_profile"},
@@ -424,7 +424,7 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertIn("probe-ok", result["data"]["stdout"])
 
     def test_handle_probe_python_experiment_prefers_project_environment(self) -> None:
-        with mock.patch("tree.autokernel_probes.subprocess.run") as run_mock:
+        with mock.patch("kernel_tools.probes.subprocess.run") as run_mock:
             run_mock.return_value = subprocess.CompletedProcess(
                 args=["uv"],
                 returncode=0,
@@ -450,7 +450,7 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
 
     def test_handle_probe_python_experiment_falls_back_to_python3_when_uv_missing(self) -> None:
-        with mock.patch("tree.autokernel_probes.subprocess.run") as run_mock:
+        with mock.patch("kernel_tools.probes.subprocess.run") as run_mock:
             run_mock.side_effect = [
                 FileNotFoundError("uv not found"),
                 subprocess.CompletedProcess(
@@ -481,7 +481,7 @@ class AutoKernelTaskTests(unittest.TestCase):
             "ptxas info    : Used 48 registers, 4096 bytes smem, 128 bytes cmem[0]\n"
             "ptxas info    : 0 bytes stack frame, 16 bytes spill stores, 8 bytes spill loads\n"
         )
-        with mock.patch("tree.autokernel_probes.subprocess.run") as run_mock:
+        with mock.patch("kernel_tools.probes.subprocess.run") as run_mock:
             run_mock.return_value = subprocess.CompletedProcess(
                 args=["python3"],
                 returncode=0,
@@ -501,7 +501,7 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertEqual(result["data"]["parsed"]["spill_store_bytes"], 16)
 
     def test_handle_probe_ncu_profile_uses_default_bench_command(self) -> None:
-        with mock.patch("tree.autokernel_probes.subprocess.run") as run_mock:
+        with mock.patch("kernel_tools.probes.subprocess.run") as run_mock:
             run_mock.return_value = subprocess.CompletedProcess(
                 args=["ncu"],
                 returncode=0,
@@ -522,7 +522,7 @@ class AutoKernelTaskTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
 
     def test_handle_probe_nsys_profile_uses_default_bench_command(self) -> None:
-        with mock.patch("tree.autokernel_probes.subprocess.run") as run_mock:
+        with mock.patch("kernel_tools.probes.subprocess.run") as run_mock:
             run_mock.return_value = subprocess.CompletedProcess(
                 args=["nsys"],
                 returncode=0,

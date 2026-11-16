@@ -1,5 +1,7 @@
 # Run Interaction Metrics
 
+> Historical design notes. Current artifact names and counters are in [Run Artifacts](run-artifacts.md).
+
 这份文档记录 run viewer 背后的数据和指标问题。
 早期版本只讨论数据契约；当前代码已经有 `tree/viewer.py` 和
 `scripts/tree_report.py`，可以生成 JSONL、SVG、HTML 和 Markdown 摘要。

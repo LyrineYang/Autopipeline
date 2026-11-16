@@ -143,8 +143,8 @@ class TreeSearchEngine:
                         "recommended_scope": packet.search_policy.recommended_scope if packet.search_policy else "",
                         "scope_options": packet.search_policy.scope_options if packet.search_policy else [],
                         "exploration_bias": packet.search_policy.exploration_bias if packet.search_policy else "",
-                        "branch_budget_rounds": packet.search_policy.branch_budget.rounds if packet.search_policy else None,
-                        "stop_conditions": packet.search_policy.stop_conditions if packet.search_policy else [],
+                        "max_local_iterations": packet.search_policy.branch_budget.max_local_iterations if packet.search_policy else None,
+                        "stop_guidance": packet.search_policy.stop_guidance if packet.search_policy else [],
                         "frozen_decisions": list(packet.frozen_decisions),
                         "branch_scope": hypothesis.scope,
                         "branch_target": hypothesis.target,
@@ -174,18 +174,21 @@ class TreeSearchEngine:
             ]
             if accepted_this_round:
                 accepted_this_round.sort(
-                    key=lambda item: item.evaluation_result.score,
+                    key=lambda item: item.evaluation_result.ranking_score,
                     reverse=True,
                 )
                 next_frontier = [node.id for node in accepted_this_round[:effective_beam_width]]
                 promoted = set(next_frontier)
                 for node in accepted_this_round[effective_beam_width:]:
                     node.status = "pruned"
+                    node.prune_reason = "beam_limit"
                 self.frontier_node_ids = next_frontier
             else:
                 promoted = set(self.frontier_node_ids)
 
             for node, parent in chain.from_iterable(proposals_by_parent):
+                if node.skipped_before_execution:
+                    continue
                 self.archive.record_node(
                     node=node,
                     parent=parent,
@@ -270,16 +273,16 @@ class TreeSearchEngine:
         baseline.evaluation_result = self.task.evaluate(baseline)
         baseline.status = "completed"
 
-        self.root_memory.baseline_score = baseline.evaluation_result.score
+        self.root_memory.baseline_score = baseline.evaluation_result.ranking_score
         if baseline.evaluation_result.accepted:
-            self.root_memory.best_score = baseline.evaluation_result.score
+            self.root_memory.best_score = baseline.evaluation_result.ranking_score
             self.root_memory.best_node_id = baseline.id
         self._record_hypothesis(baseline.hypothesis)
         self._log_event(
             "baseline_completed",
             {
                 "node_id": baseline.id,
-                "score": baseline.evaluation_result.score,
+                "score": baseline.evaluation_result.ranking_score,
                 "accepted": baseline.evaluation_result.accepted,
                 "summary": baseline.evaluation_result.summary,
             },
@@ -322,12 +325,14 @@ class TreeSearchEngine:
                 "node_id": node.id,
                 "parent_id": node.parent_id,
                 "status": node.status,
-                "score": node.evaluation_result.score if node.evaluation_result else None,
+                "prune_reason": node.prune_reason,
+                "score": node.evaluation_result.ranking_score if node.evaluation_result else None,
                 "accepted": node.evaluation_result.accepted if node.evaluation_result else None,
                 "error": node.error,
             },
         )
-        self.budget_ledger.record_node(node=node, parent=parent)
+        if not node.skipped_before_execution:
+            self.budget_ledger.record_node(node=node, parent=parent)
         self._persist_state()
 
     def _run_candidate_batch(self, node_parents: list[tuple[SearchNode, SearchNode]]) -> list[SearchNode]:
@@ -370,10 +375,10 @@ class TreeSearchEngine:
                 node.evaluation_result.accepted
                 and (
                     self.root_memory.best_score is None
-                    or node.evaluation_result.score > self.root_memory.best_score
+                    or node.evaluation_result.ranking_score > self.root_memory.best_score
                 )
             ):
-                self.root_memory.best_score = node.evaluation_result.score
+                self.root_memory.best_score = node.evaluation_result.ranking_score
                 self.root_memory.best_node_id = node.id
 
     def _record_hypothesis(self, hypothesis: Hypothesis) -> None:
@@ -456,9 +461,9 @@ class TreeSearchEngine:
         ):
             return False
         policy = packet.search_policy
-        if policy is None or policy.branch_budget.rounds is None:
+        if policy is None or policy.branch_budget.max_tree_depth is None:
             return True
-        return parent.depth < min(self.config.max_rounds, policy.branch_budget.rounds)
+        return parent.depth < min(self.config.max_rounds, policy.branch_budget.max_tree_depth)
 
     def _parallel_branch_limit(self, pending_count: int) -> int:
         configured = max(1, int(self.config.max_parallel_branches or 1))

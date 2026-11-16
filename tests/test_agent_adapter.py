@@ -9,12 +9,12 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from tree.agent import AgentStepError, CommandAgentAdapter
-from tree.budget import BudgetLedger
-from tree.prompts import build_execution_payload, build_execution_prompt
-from tree.sensing import SensingRuntime
-from tree.types import AgentRoleConfig, EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
-from tree.planner import PlannerPacket
+from autopipeline.search.agent import AgentStepError, CommandAgentAdapter
+from autopipeline.search.budget import BudgetLedger
+from autopipeline.search.prompts import build_execution_payload, build_execution_prompt
+from autopipeline.search.sensing import SensingRuntime
+from autopipeline.search.types import AgentRoleConfig, EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
+from autopipeline.search.planner import PlannerPacket
 
 
 class AdapterTask:

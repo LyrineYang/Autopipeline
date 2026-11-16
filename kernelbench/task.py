@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tree.task import OptimizationTask
-from tree.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
-from tree.prior import kernel_optimization_prior, kernel_prior_family_ids
+from autopipeline.search.task import OptimizationTask
+from autopipeline.search.types import EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
+from autopipeline.search.prior import kernel_optimization_prior, kernel_prior_family_ids
 
 from .bridge import KernelBenchProblem
 
