@@ -1,29 +1,47 @@
-# AutoPipeline
+<h1 align="center">AutoPipeline</h1>
 
-**用树搜索和 coding agent 优化 PyTorch 工作负载，交付可复验的代码。**
+<p align="center"><strong>Tree search for verified PyTorch optimizations</strong></p>
 
-你提供参考实现、输入、设备和调用预算。AutoPipeline 让 agent 尝试不同实现，
-独立检查输出并测量延迟，再保留通过评估的分支继续迭代。每次运行都会留下
-候选代码、评测记录和报告。通过最终验证的候选可以导出，在另一环境重新评估。
+<p align="center">
+  <img src="docs/assets/autopipeline-tree.webp" width="880" alt="A search tree with several candidate branches and a highlighted path to the selected implementation">
+</p>
 
-基于 [AutoKernel](https://github.com/RightNow-AI/autokernel) 扩展。
-当前为 alpha，已在 CPU 上验证安装、评估、导出和真实 agent 闭环。实际加速比
-取决于工作负载和设备，CUDA 兼容性与多分支收益需在目标机器上验证。
+<p align="center">
+  <a href="https://github.com/LyrineYang/Autopipeline/actions/workflows/ci.yml"><img src="https://github.com/LyrineYang/Autopipeline/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI on main"></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/Python-3.10%2B-306998?style=flat" alt="Python 3.10 and newer"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.4.0a6-156F78?style=flat" alt="Version 1.4.0a6"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-40566C?style=flat" alt="MIT license"></a>
+</p>
 
-[完整 Quickstart](docs/quickstart.md) · [模型案例](examples/README.md) ·
-[CUDA 环境](docs/quickstart.md#首次服务器使用) · [开发者入口](docs/dev/README.md)
+<p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="docs/quickstart.md">Guide</a> ·
+  <a href="examples/README.md">Examples</a> ·
+  <a href="docs/quickstart.md#nvidia-preflight">NVIDIA Setup</a> ·
+  <a href="docs/dev/handoff.md">Handoff</a>
+</p>
 
-## 快速开始
+Give AutoPipeline a reference implementation, representative inputs, and a device. A coding agent
+tries different implementations. AutoPipeline checks their outputs and measures forward latency
+against the fixed reference, then keeps up to two branches per round by default. It rechecks the
+selected implementation before you export it.
 
-使用 Python 3.10+，推荐 3.11 或更新版本。取得 AutoPipeline 源码包后，
-在源码根目录执行下面的命令。内置 MLP 使用随机权重，评估无需 agent 账号。
-如果只有 wheel，参见[安装方式](docs/quickstart.md#安装方式)。
+| Search within a budget | Judge changes independently | Keep a reproducible result |
+| --- | --- | --- |
+| Set rounds, candidates per branch, and agent calls. | Compare seeded outputs, record latency samples, and collect an operator profile. | Export the selected code, reference, and verification records for a fresh evaluation. |
+
+## Quick Start
+
+Use Python 3.10 or newer. The built-in residual MLP uses random weights and runs on CPU without an
+agent account. If you already have a source checkout, start at the virtual environment step.
+See the [installation guide](docs/quickstart.md#installation) for wheels and existing PyTorch environments.
 
 ```sh
+git clone --branch main https://github.com/LyrineYang/Autopipeline.git autopipeline
+cd autopipeline
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install '.[cpu]'
-autopipeline --version
 
 autopipeline pipeline init workspace/demo --device cpu
 autopipeline pipeline check --spec workspace/demo/pipeline.json
@@ -31,14 +49,14 @@ autopipeline pipeline evaluate --spec workspace/demo/pipeline.json --run-dir wor
 autopipeline report workspace/demo/runs/baseline
 ```
 
-打开 `workspace/demo/runs/baseline/view/dashboard.html` 查看输出校验、前向延迟和
-profiler。初始候选沿用参考实现，基线评估通过表示这条执行路径可用。
+Open `workspace/demo/runs/baseline/view/dashboard.html` for the verification result, measured
+latency, and profile. The initial candidate uses the reference implementation, so the first
+evaluation gives you a baseline.
 
-## 用树搜索优化
+## Run a Tree Search
 
-在同一台机器上安装并登录 Codex CLI，确认 `codex login status` 成功。
-接着运行上面的工作负载。也可以用 `--executor-command` 接入自己的 agent。
-安装和登录详见[配置 agent](docs/quickstart.md#配置-agent)。
+On the execution machine, install and authenticate Codex CLI. You can also supply another coding
+agent with `--executor-command`. [Agent setup](docs/quickstart.md#connect-a-coding-agent)
 
 ```sh
 autopipeline pipeline run --spec workspace/demo/pipeline.json \
@@ -48,41 +66,29 @@ autopipeline pipeline run --spec workspace/demo/pipeline.json \
 autopipeline report workspace/demo/runs/search
 ```
 
-这组参数允许首轮尝试两个方向，后续从通过评估的分支继续，最多调用 agent 四次。
-如果没有候选带来通过复验的改进，报告会给出本次运行的实际结果。
-调用次数限制控制使用次数，服务费用取决于所用账号和模型。
+If two first-round candidates pass, both can be tried before either gets a second child.
+The example uses at most four agent calls. Search uses your configured service quota. The report
+shows the selected candidate and whether it passed the final check.
 
-## 导出和复验
+## Bring Your Own Workload
 
-```sh
-autopipeline pipeline export workspace/demo/runs/search --output-dir workspace/demo-export
-autopipeline pipeline evaluate --spec workspace/demo-export/pipeline.json \
-  --candidate workspace/demo-export/candidate
-```
-
-导出要求运行通过最终验证。只完成 CPU 基线时，也可以把上面的
-`workspace/demo/runs/search` 换成 `workspace/demo/runs/baseline`。
-外部权重需在复验机器单独提供。旧结果目录会保留，重跑时省略 `--run-dir`
-即可创建新目录。
-
-## 换成自己的负载
-
-| 负载 | 如何开始 |
+| Workload | Starting point |
 | --- | --- |
-| Attention 与残差 MLP | `autopipeline pipeline init work --example attention --device cpu` |
-| 本地 Transformers 编码器 | `autopipeline pipeline init work --example hf-local --model-dir /path/to/encoder --device cpu` |
-| 自有 PyTorch 模型或组合 pipeline | `autopipeline pipeline init work --source /path/to/workload --device cpu` |
+| Residual MLP or a small Transformer block | `pipeline init --example residual-mlp` or `--example attention` |
+| Local Transformers encoder | `pipeline init --example hf-local --model-dir /path/to/encoder` |
+| Any compatible PyTorch module | `pipeline init --source /path/to/workload` |
 
-自有负载提供 `reference.py`、`Model` 和 `get_inputs()`。默认只允许 agent
-修改 `candidate.py`。原生评测测量同步的 `forward()`，其他执行协议可接
-自定义评测器。接入完整说明和服务器预检见[使用指南](docs/quickstart.md)。
+Custom workloads provide `reference.py` with `Model` and `get_inputs()`. The agent edits
+`candidate.py` by default. The native evaluator measures synchronized `forward()` calls.
+For custom execution contracts, see the [developer guide](docs/dev/README.md).
+[Export and recheck a result](docs/quickstart.md#export-and-recheck) · [Explore all examples](examples/README.md)
 
-仅运行来自可信来源的工作负载。候选代码在本地执行，工作区复制只隔离文件修改。
-原有单算子和 KernelBench 命令可从源码检出使用，参见[兼容工具](docs/dev/README.md#兼容工具)。
+## Project Status
 
-## 反馈与许可
+**Alpha.** CPU installation, model evaluation, export, and a real-agent pilot have been exercised.
+The RTX 4060 experiment will test CUDA compatibility and whether keeping multiple branches
+improves repeatable latency at the same agent budget. [Experiment handoff](docs/dev/handoff.md)
 
-反馈问题时附版本、执行命令、设备环境和脱敏后的运行记录。
-安全问题按[安全说明](SECURITY.md)私下报告。
-
-采用 [MIT 许可](LICENSE)，保留 AutoKernel 的来源与版权信息。
+AutoPipeline builds on [AutoKernel](https://github.com/RightNow-AI/autokernel). The original
+kernel tools and KernelBench integrations are available from a source checkout.
+[Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)

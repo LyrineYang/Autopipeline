@@ -84,7 +84,7 @@ uv run autopipeline tree run --kernel-file workspace/kernel_matmul_1.py --run-na
 this repository's `origin`, not `autokernel-base`. The upstream remote is for
 lineage and read-only comparison.
 
-`codex/level5` and `codex/apimetric` are independent benchmark development lines.
+The `research/level5` line holds the Level 5 benchmark and apimetric research.
 Keep their task definitions, baselines, scoring and benchmark metrics there.
 Share a callable task/evaluator contract with the product; do not merge benchmark
 experiments into the product to make an integration test convenient. Tree and
