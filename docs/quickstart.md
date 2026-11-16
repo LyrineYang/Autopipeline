@@ -120,6 +120,7 @@ CPU 与 CUDA 使用同样的 agent 接口。先在执行机器安装
 ```sh
 codex --version
 codex login
+codex login status
 ```
 
 无浏览器服务器可按[官方认证说明](https://learn.chatgpt.com/docs/auth#login-on-headless-devices)
@@ -141,17 +142,22 @@ autopipeline report my-pipeline/runs/search
 只有 run 会使用 agent 服务额度；基线失败会阻止后续 agent 调用。
 上述配置只启用模型 executor；planner/reflector 使用本地策略。如需模型角色，
 增加 `--planner-backend codex-app-server` 或 `--reflector-backend codex-app-server`，
-并相应预留调用预算。角色模型可通过 `--executor-model` 等参数指定。
+并相应预留调用预算。默认模型不可用时，用 `--executor-model` 指定当前账号可用的
+模型。需要控制推理档位时使用 `--executor-reasoning-effort`。
 
 | 控制项 | 作用 |
 | --- | --- |
-| max-rounds / children-per-expansion / beam-width | 限制搜索规模；第一次使用从小预算开始 |
+| max-rounds | 展开轮数上限 |
+| children-per-expansion | 每个候选在一轮中尝试的方向数上限 |
+| beam-width | 一轮结束后保留并允许继续细化的候选数上限 |
 | max-agent-calls | agent 调用次数上限，不是金额上限；也不保证全部预算都会用完 |
 | max-probe-calls | 主动探测次数上限；原生 pipeline run 当前要求正数 |
 | command-timeout-seconds | 默认 600 秒，限制单次 agent 命令 |
 
-原生 pipeline 当前只允许串行分支测量。确认一次完整编辑和复验成功后，再逐步
-增加轮数、候选数量或工作负载规模；不因没有提速直接加大预算。
+原生 PyTorch pipeline 串行评估候选。把 `--children-per-expansion` 和
+`--beam-width` 都设为 1，可逐轮沿一个候选迭代。两者设为 2 可尝试不同方向
+并保留最多两个候选。比较两种配置时，使用同一工作负载、模型、推理档位和
+调用上限，并使用不同的运行目录。用量报告提供实际令牌数，调用预算按次数计。
 
 `autopipeline pipeline run --help` 展示常用连接参数、搜索规模、调用上限与超时；
 `autopipeline pipeline run --help-all` 展示完整参数。已有高级参数仍可直接使用，

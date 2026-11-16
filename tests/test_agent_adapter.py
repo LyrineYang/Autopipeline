@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from tree.agent import AgentStepError, CommandAgentAdapter
+from tree.budget import BudgetLedger
 from tree.prompts import build_execution_payload, build_execution_prompt
 from tree.sensing import SensingRuntime
 from tree.types import AgentRoleConfig, EvaluationResult, Hypothesis, RootMemory, SearchNode, TaskSnapshot
@@ -287,8 +288,6 @@ class CommandAgentAdapterTests(unittest.TestCase):
             },
         )
 
-        from tree.budget import BudgetLedger
-
         ledger = BudgetLedger()
         adapter.set_budget_ledger(ledger)
         execution = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
@@ -363,6 +362,7 @@ class CommandAgentAdapterTests(unittest.TestCase):
             def send(message):
                 print(json.dumps(message), flush=True)
 
+            resumed = False
             for line in sys.stdin:
                 message = json.loads(line)
                 method = message.get("method")
@@ -374,10 +374,16 @@ class CommandAgentAdapterTests(unittest.TestCase):
                     send({"id": message["id"], "result": {"thread": {"id": "thread-persist"}}})
                     send({"method": "thread/started", "params": {"thread": {"id": "thread-persist"}}})
                 elif method == "thread/resume":
+                    resumed = True
                     send({"id": message["id"], "result": {"thread": {"id": message["params"]["threadId"]}}})
                     send({"method": "thread/started", "params": {"thread": {"id": message["params"]["threadId"]}}})
                 elif method == "turn/start":
                     send({"id": message["id"], "result": {"turn": {"id": "turn-ok", "status": "inProgress"}}})
+                    previous = 100 if resumed else 0
+                    send({"method": "thread/tokenUsage/updated", "params": {"tokenUsage": {
+                        "total": {"inputTokens": previous + 75, "outputTokens": 25, "totalTokens": previous + 100},
+                        "last": {"inputTokens": 75, "outputTokens": 25, "totalTokens": 100},
+                    }}})
                     send({"method": "turn/completed", "params": {"turn": {"id": "turn-ok", "status": "completed"}}})
                     break
             """,
@@ -392,11 +398,14 @@ class CommandAgentAdapterTests(unittest.TestCase):
             },
         )
 
+        ledger = BudgetLedger()
+        adapter.set_budget_ledger(ledger)
         first = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
         second = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
 
         self.assertFalse(first.metadata["thread_resumed"])
         self.assertTrue(second.metadata["thread_resumed"])
+        self.assertEqual(ledger.total_tokens, 200)
         session_path = Path(second.metadata["session_path"])
         self.assertEqual(json.loads(session_path.read_text(encoding="utf-8"))["thread_id"], "thread-persist")
         requests = (Path(self.node.node_dir) / "agent" / "execute" / "app_server_requests.jsonl").read_text(encoding="utf-8")
