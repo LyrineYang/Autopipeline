@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
@@ -16,81 +15,14 @@ import sys
 from pipeline.task import PipelineSpec, PipelineTask, setup_pipeline_workspace
 from tree.agent import CommandAgentAdapter
 from tree.agent_backend import role_uses_app_server
-from tree.roles import add_role_config_args, build_role_configs_from_args, role_config_for
+from tree.roles import build_role_configs_from_args, role_config_for
 from tree.search import TreeSearchEngine
 from tree.types import SearchConfig
-from tree.viewer import write_run_view
 from .project import copy_workspace, initialize, write_json, validate_model_directory, model_asset_hashes
 from .workloads import EXAMPLES
-
-
-WORKLOAD_HELP = """\
-AutoPipeline workload commands
-
-  examples                          List workloads and required resources
-  init DIRECTORY --device cpu       Create a workload
-  check --spec FILE                 Check configuration and device
-  evaluate --spec FILE              Evaluate without an agent
-  run --spec FILE                   Optimize with your configured agent
-  export RUN_DIR --output-dir DIR   Export verified code
-
-Start with init, check, and evaluate; run requires an agent backend.
-View results with: autopipeline report RUN_DIR
-
-Options: autopipeline pipeline COMMAND --help
-Developer utilities: autopipeline pipeline --help-all
-"""
-
-
-def build_parser():
-    parser = argparse.ArgumentParser(prog="autopipeline pipeline", description="Create, validate, optimize, and export real inference workloads.")
-    commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("examples", help="List included workloads and their resource requirements")
-    init = commands.add_parser("init", help="Create a PyTorch workload project; no GPU or API call")
-    init.add_argument("directory")
-    init.add_argument("--source", help="Copy your directory containing reference.py and optional candidate.py")
-    init.add_argument("--example", choices=list(EXAMPLES), default="residual-mlp")
-    init.add_argument("--model-dir", help="Existing local encoder weights for --example hf-local; never downloads")
-    init.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
-    init.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32")
-    for name in ("check", "evaluate", "run"):
-        p = commands.add_parser(name, help={"check": "Check configuration and resource readiness without invoking an agent",
-                                           "evaluate": "Measure and verify a workload without an agent",
-                                           "run": "Optimize a workload with an explicitly configured agent"}[name])
-        p.add_argument("--spec", required=True)
-        if name == "check":
-            p.add_argument("--no-runtime", action="store_true", help="Validate files/config only; does not assert runtime readiness")
-            p.add_argument("--json", action="store_true")
-        else:
-            p.add_argument("--run-dir", help="New output directory; existing directories are never overwritten")
-            p.add_argument("--run-name")
-            p.add_argument("--candidate", help="Evaluate/start from this candidate workspace against the fixed reference")
-        if name in {"check", "run"}:
-            p.add_argument("--executor-command")
-            add_role_config_args(p)
-        if name == "run":
-            p.add_argument("--planner-command")
-            p.add_argument("--reflector-command")
-            p.add_argument("--planner-handoff-mode", choices=["idea", "variant", "detailed"], default="variant")
-            p.add_argument("--beam-width", type=int, default=1)
-            p.add_argument("--max-rounds", type=int, default=3)
-            p.add_argument("--children-per-expansion", type=int, default=2)
-            p.add_argument("--max-agent-calls", type=int, default=12)
-            p.add_argument("--max-probe-calls", type=int, default=12)
-            p.add_argument("--command-timeout-seconds", type=float, default=600)
-            p.add_argument("--max-parallel-branches", type=int, choices=[1], default=1, help="Serial measurements on a single device")
-            p.add_argument("--branch-resource-policy", choices=["conservative"], default="conservative")
-    export = commands.add_parser("export", help="Export a verified candidate, fixed reference, and validation receipts")
-    export.add_argument("run_dir")
-    export.add_argument("--output-dir", required=True)
-    info = commands.add_parser("info", help="Show a validated pipeline spec")
-    info.add_argument("--spec", required=True)
-    setup = commands.add_parser("setup", help="Copy a spec workspace to a new directory")
-    setup.add_argument("--spec", required=True)
-    setup.add_argument("--output-dir", required=True)
-    smoke = commands.add_parser("smoke", help="Synthetic harness fixture only; not a model or performance experiment")
-    smoke.add_argument("--run-dir", required=True)
-    return parser
+from .pipeline_help import WORKLOAD_HELP, build_parser
+from .presentation import command, evaluate_command, print_outcome, next_steps
+from .report import write_product_view
 
 
 def readiness(spec: PipelineSpec, *, args, require_executor=False) -> dict:
@@ -111,7 +43,7 @@ def readiness(spec: PipelineSpec, *, args, require_executor=False) -> dict:
                 if type(model.get(key)) is not int or model[key] < 1:
                     raise ValueError(f"model.json {key} must be a positive integer")
             if not getattr(args, "no_runtime", False) and importlib.util.find_spec("transformers") is None:
-                errors.append("Transformers is missing. Install the models extra: python -m pip install '.[cpu,models]' from the checkout.")
+                errors.append("Transformers is missing. Reinstall your AutoPipeline wheel with [cpu,models], or run python -m pip install '.[cpu,models]' from its source directory.")
             notes.append("Local pretrained weights are external read-only assets; preserve this model version when rechecking exports.")
         tolerances = spec.metadata.get("numerical_tolerances", {})
         if any(config[key] != tolerances.get(key) for key in ("atol", "rtol")):
@@ -121,13 +53,13 @@ def readiness(spec: PipelineSpec, *, args, require_executor=False) -> dict:
                 errors.append(f"Missing workload file: {file}")
         if not getattr(args, "no_runtime", False):
             if importlib.util.find_spec("torch") is None:
-                errors.append("PyTorch is missing. Install auto-pipeline[cpu] or auto-pipeline[gpu] in this environment.")
+                errors.append("PyTorch is missing. Reinstall your AutoPipeline wheel with [cpu] or [gpu], or run python -m pip install '.[cpu]' from its source directory. Use check --no-runtime for files/config only.")
                 runtime = "unavailable"
             else:
                 import torch
                 runtime = f"torch {torch.__version__}; requested device: {config['device']}"
                 if config["device"] == "cuda" and not torch.cuda.is_available():
-                    errors.append("CUDA is unavailable; use an NVIDIA server with a matching PyTorch build. No CPU fallback is applied.")
+                    errors.append("CUDA is unavailable; use an NVIDIA server with a matching PyTorch build. No CPU fallback is applied. To try CPU, create a new workload with: autopipeline pipeline init NEW_DIRECTORY --device cpu")
         notes.append("Profiler runs with each evaluation; CPU evidence does not establish CUDA performance.")
     roles = build_role_configs_from_args(args)
     executor = role_config_for(roles, "executor")
@@ -170,6 +102,8 @@ def run_workload(args) -> int:
         raise ValueError("\n".join(check["errors"]))
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     run_dir = Path(args.run_dir or spec.path.parent / "runs" / f"{stamp}-{args.command}").resolve()
+    if run_dir.exists():
+        raise FileExistsError(f"Run directory already exists: {run_dir}. Omit --run-dir to create a new timestamped run; existing results are never overwritten.")
     if run_dir == spec.workspace_source or spec.workspace_source in run_dir.parents:
         raise ValueError("Run directory must be outside workspace_source")
     initial = Path(args.candidate).resolve() if args.candidate else None
@@ -181,6 +115,17 @@ def run_workload(args) -> int:
     result_path = run_dir / "result.json"
     write_json(result_path, {"status": "running", "started_at": datetime.now(timezone.utc).isoformat()})
     try:
+        print(f"运行目录：{run_dir}\n环境：{check['runtime']}", flush=True)
+        print(f"候选可编辑文件：{', '.join(spec.editable_paths) or spec.target_path}；参考和评测配置保持固定。", flush=True)
+        print("即将执行本地参考与候选代码；工作区复制不是操作系统安全沙箱。", flush=True)
+        if args.command == "run":
+            print(f"Agent：{check['executor']}；可能联系已配置服务并消耗额度。\n"
+                  f"预算：最多 {args.max_agent_calls} 次 agent 调用、{args.max_probe_calls} 次主动探测；"
+                  f"每次 agent 命令超时 {args.command_timeout_seconds:g} 秒。调用次数不是金额上限。\n"
+                  "先评估基线，基线无效不会开始 agent 调用；优化不保证提速。", flush=True)
+        else:
+            print("本次不调用 agent；执行数值检查、计时与 profiler，再独立复验。", flush=True)
+        print("查看当前记录：" + command("autopipeline", "report", run_dir), flush=True)
         frozen = run_dir / "input" / "workload"
         copy_workspace(spec.workspace_source, frozen)
         data = json.loads(spec.path.read_text())
@@ -218,7 +163,6 @@ def run_workload(args) -> int:
                                     reflector_command=config.reflector_command, role_configs=roles,
                                     command_timeout_seconds=config.command_timeout_seconds)
         engine = TreeSearchEngine(task=task, agent=agent, config=config, run_dir=run_dir)
-        print(f"Running {args.command}; artifacts: {run_dir}", flush=True)
         result = engine.run()
         children = [node for node in engine.nodes.values() if node.parent_id is not None]
         successful_edits = [node for node in children if node.execution_result and node.execution_result.status == "completed"]
@@ -245,14 +189,25 @@ def run_workload(args) -> int:
                                       None if verified else "Evaluation or final verification failed; inspect node verification logs",
                    "final_verification": result.final_verify}
         write_json(result_path, summary)
-        write_run_view(run_dir)
-        print(f"Status: {status}\nResult: {result_path}\nReport: {run_dir / 'view' / 'summary.md'}")
+        try:
+            write_product_view(run_dir)
+        except (OSError, ValueError, RuntimeError) as exc:
+            # Report rendering is not part of the evaluator's verdict.
+            print(f"报告生成失败：{exc}\n验证记录已保留；重试：" + command("autopipeline", "report", run_dir), file=sys.stderr)
+        print_outcome(summary)
+        print(f"Status: {status}\nResult: {result_path}")
+        if (run_dir / 'view' / 'summary.md').is_file():
+            print(f"Report: {run_dir / 'view' / 'summary.md'}")
+        if (run_dir / 'view' / 'dashboard.html').is_file():
+            print(f"Dashboard: {run_dir / 'view' / 'dashboard.html'}")
         if result.promoted_path:
             print(f"Candidate: {result.promoted_path}")
+        print("\n".join(next_steps(run_dir, summary)))
         return 0 if status != "failed" else 1
     except BaseException as exc:
         write_json(result_path, {"status": "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
                                  "error": f"{type(exc).__name__}: {exc}", "run_dir": str(run_dir)})
+        print("查看失败记录：" + command("autopipeline", "report", run_dir), file=sys.stderr)
         raise
 
 
@@ -267,7 +222,7 @@ def export_run(run_dir: Path, destination: Path) -> None:
     if _hash_workspace(candidate) != result["candidate_hashes"] or _hash_workspace(reference) != result["reference_hashes"]:
         raise ValueError("Run files changed after verification. Evaluate them again before exporting.")
     if destination.exists():
-        raise FileExistsError(f"Destination already exists: {destination}")
+        raise FileExistsError(f"Destination already exists: {destination}. Choose a new --output-dir; existing exports are never overwritten.")
     if run_dir == destination or run_dir in destination.parents:
         raise ValueError("Export destination must be outside the run directory")
     destination.mkdir(parents=True)
@@ -291,13 +246,13 @@ def export_run(run_dir: Path, destination: Path) -> None:
 
 def main(argv=None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
-    if args_list in (["--help"], ["-h"]):
+    if not args_list or args_list in (["--help"], ["-h"]):
         print(WORKLOAD_HELP)
         return 0
     if args_list == ["--help-all"]:
         build_parser().print_help()
         return 0
-    parser = build_parser()
+    parser = build_parser(show_all="--help-all" in args_list)
     args = parser.parse_args(args_list)
     try:
         if args.command == "examples":
@@ -306,17 +261,34 @@ def main(argv=None) -> int:
         elif args.command == "init":
             spec = initialize(Path(args.directory), source=Path(args.source) if args.source else None, device=args.device, dtype=args.dtype,
                               example=args.example, model_dir=Path(args.model_dir) if args.model_dir else None)
-            print(f"Created: {spec}\nNext: autopipeline pipeline check --spec {spec}")
+            print(f"Created: {spec}\n设备：{args.device}；数值类型：{args.dtype}。未执行模型、下载权重或调用 agent。")
+            print("下一步，检查设备和配置：\n" + command("autopipeline", "pipeline", "check", "--spec", spec))
+            print(f"使用说明：{spec.parent / 'README.md'}")
         elif args.command == "check":
             report = readiness(PipelineSpec.load(Path(args.spec)), args=args)
-            print(json.dumps(report, indent=2) if args.json else "\n".join(
-                [f"Configuration: valid; runtime: {report['runtime']}; executor: {report['executor']}"] + report["errors"] + report["notes"]))
+            if args.json:
+                print(json.dumps(report, indent=2))
+            else:
+                print(f"检查{'通过' if report['ok'] else '未通过'}；环境：{report['runtime']}")
+                for error in report['errors']:
+                    print(f"需要处理：{error}")
+                print("未执行模型或联系 agent 服务；检查通过不等于评估通过。")
+                if report['executor'] != 'not_configured':
+                    print(f"Agent：{report['executor']}；未验证登录或额度。")
+                if report['ok']:
+                    if args.no_runtime:
+                        print("下一步，检查实际设备：\n" + command("autopipeline", "pipeline", "check", "--spec", Path(args.spec).resolve()))
+                    else:
+                        print("下一步，评估模型（不调用 agent）：\n" + evaluate_command(Path(args.spec).resolve()))
             return 0 if report["ok"] else 1
         elif args.command in {"evaluate", "run"}:
             return run_workload(args)
         elif args.command == "export":
             export_run(Path(args.run_dir).resolve(), Path(args.output_dir).resolve())
-            print(f"Exported: {Path(args.output_dir).resolve()}")
+            destination = Path(args.output_dir).resolve()
+            print(f"Exported: {destination}\n导出包含候选、固定参考和验证记录；未部署服务或复制外部权重。")
+            print("下一步，在依赖和模型资源就绪后重新评估（不调用 agent）：\n" +
+                  evaluate_command(destination / "pipeline.json", destination / "candidate"))
         elif args.command == "info":
             print(json.dumps(asdict(PipelineSpec.load(Path(args.spec))), default=str, indent=2))
         elif args.command == "setup":

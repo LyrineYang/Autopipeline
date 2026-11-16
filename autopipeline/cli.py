@@ -29,9 +29,14 @@ Workflow:
   autopipeline report RUN_DIR                    View results
   autopipeline pipeline export RUN_DIR --output-dir DIRECTORY
 
+init/check do not execute the model or call an agent. evaluate executes local code.
+run may contact your agent service and use quota; call limits are not spending limits.
+Start on CPU without a GPU. Verified results do not guarantee a speedup.
+
 Help:
   autopipeline pipeline --help                   Workload commands
   autopipeline pipeline COMMAND --help           Command options
+  autopipeline pipeline COMMAND --help-all       Advanced options and integration
   autopipeline --version                         Installed version
   autopipeline --help-all                        Developer and compatibility tools
 """

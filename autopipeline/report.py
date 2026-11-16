@@ -7,14 +7,24 @@ from pathlib import Path
 import sys
 
 from tree.viewer import write_run_view
+from .presentation import load_receipt, outcome, print_outcome, next_steps
+
+
+def write_product_view(run_dir: Path, output_dir: Path | None = None):
+    receipt = load_receipt(run_dir)
+    message = outcome(receipt) if receipt is not None else None
+    if message is not None:
+        message["next_step"] = "\n".join(next_steps(run_dir, receipt))
+    return write_run_view(run_dir, output_dir=output_dir, outcome=message)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="autopipeline report",
-        description="Build a human-readable dashboard from an optimization run.",
+        description="Explain an evaluation or optimization result and build its report; no agent call.",
+        epilog="Failed or interrupted runs can also be inspected. Reporting success does not mean the workload passed verification.",
     )
-    parser.add_argument("run_dir", help="Run directory containing search_state.json.")
+    parser.add_argument("run_dir", help="Run directory printed by evaluate/run, not the workload project directory.")
     parser.add_argument("--output-dir", help="Defaults to RUN_DIR/view.")
     return parser
 
@@ -23,15 +33,20 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         run_dir = Path(args.run_dir).resolve()
-        if not (run_dir / "search_state.json").is_file():
-            raise ValueError(f"No search_state.json in run directory: {run_dir}")
-        paths = write_run_view(
+        receipt = load_receipt(run_dir)
+        if not (run_dir / "search_state.json").is_file() and receipt is None:
+            raise ValueError(f"No run record (result.json or search_state.json) in: {run_dir}. "
+                             "Use the run directory printed by evaluate/run, not the project or export directory.")
+        paths = write_product_view(
             run_dir,
             output_dir=Path(args.output_dir).resolve() if args.output_dir else None,
         )
         # Use the summary just written instead of rebuilding the whole view.
         summary = json.loads(paths.run_summary.read_text(encoding="utf-8"))
-        print(summary["title"])
+        if receipt is not None:
+            print_outcome(receipt)
+        else:
+            print(summary["title"])
         print(
             f"{summary['counts']['实验次数']} 次实验 | "
             f"{summary['counts']['变更被采纳']} 次变更被采纳 | "
@@ -39,8 +54,9 @@ def main(argv: list[str] | None = None) -> int:
             f"{summary['counts']['失败次数']} 次失败"
         )
         print(f"Dashboard: {paths.dashboard}")
-        print(f"Iteration effect: {paths.iteration_effect}")
         print(f"Summary: {paths.summary_markdown}")
+        if receipt is not None:
+            print("\n".join(next_steps(run_dir, receipt)))
         return 0
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

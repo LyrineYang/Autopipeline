@@ -6,15 +6,17 @@
 
 ## 当前可交付范围
 
-产品版本为 `1.4.0a4`，原生入口是 `autopipeline pipeline`。
+产品版本为 `1.4.0a5`，原生入口是 `autopipeline pipeline`。
 安装 wheel 后可以在源码目录之外初始化、检查、评估和导出工作负载。
 `tree`、`profile`、`extract` 等历史命令仍有源码检出依赖，不能据此宣称所有
 兼容命令都已经独立打包。Level 5 和 apimetric 是独立 benchmark 开发线。
 
-本地已有 149 项测试通过记录，以及安装包运行 residual-mlp、attention、
-hf-local 三个真实 CPU 工作负载的记录。hf-local 使用本地初始化的小型 checkpoint
+已有安装包运行 residual-mlp、attention、hf-local 三个真实 CPU 工作负载的历史记录；
+新增用户流程验收以 `scripts/check_installed_workflow.py` 为入口，实际执行 CPU 模型，
+按下一步提示完成评估、报告、导出和复验，并验证错误候选拒绝。hf-local 使用本地初始化的小型 checkpoint
 验证模型加载，不代表已验证下载的预训练模型质量或真实 agent 的优化收益。
-最新整理构建的本地验收索引是 `workspace/releases/acceptance.json`；它及日志属于运行产物，
+历史整理构建的本地验收索引是 `workspace/releases/acceptance.json`；a5 用户流程的
+交付包和验收索引放在 `workspace/u1-release/`。这些日志属于运行产物，
 不随 Git 发布。发布时应单独保存对应版本、提交、包哈希和日志。
 
 ## 每次库发布的必要检查
@@ -36,7 +38,8 @@ python -m pip wheel . --no-deps -w workspace/releases
 ```
 
 CI 配置包含 Python 单元检查、wheel 构建与源码目录外检查、CPU 产品和模型案例
-集成测试。Dependabot 只监控 Python 与 GitHub Actions。远端 CI 结果应在推送后确认。
+集成测试，以及安装 wheel 后在源码目录之外执行的完整用户流程和日志上传。
+Dependabot 只监控 Python 与 GitHub Actions。远端 CI 结果应在推送后确认。
 
 ## 需要继续推进的验证
 
@@ -75,3 +78,11 @@ README 暂以对应源码包或 wheel 作为入口，不能将远端旧分支当
 
 本地文档命令检查与 CPU 执行记录保存在 workspace 中；远端 CI、仓库可见性修改
 和对外发布仍需在实际发布操作中确认，不通过修改文档假定已经完成。
+
+## 目录迁移复验（2026-09-17）
+
+当前产品路径与环境入口见 [工作目录说明](worktree-map.md#迁移后的维护入口)。
+现有 a5 wheel 在新路径的独立环境中重新安装；迁移验收索引为
+`workspace/path-migration-20260917/acceptance.json`，CPU 命令日志和结果在同目录
+的 `cpu-workflow/`。原有 `workspace/u1-release/` 交付物及验收记录保持不变。
+这次复验覆盖本地 CPU 使用流程，不新增 CUDA、真实 agent 或远端发布结论。

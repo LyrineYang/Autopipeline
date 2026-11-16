@@ -70,3 +70,16 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_pipeline_product.py
           python -m unittest discover -s tests -p test_workload_examples.py
+      - name: Verify the installed wheel user workflow outside the checkout
+        run: |
+          python -m pip wheel . --no-deps -w "$RUNNER_TEMP/product-wheel"
+          python -m pip install --force-reinstall --no-deps "$RUNNER_TEMP"/product-wheel/*.whl
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/scripts/check_installed_workflow.py" --work-dir "$RUNNER_TEMP/user-workflow"
+      - name: Preserve user workflow evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-user-workflow
+          path: ${{ runner.temp }}/user-workflow
+          if-no-files-found: ignore

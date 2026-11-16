@@ -101,11 +101,14 @@ def build_run_view(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def write_run_view(run_dir: Path, output_dir: Path | None = None) -> ViewPaths:
+def write_run_view(run_dir: Path, output_dir: Path | None = None, *, outcome: dict[str, str] | None = None) -> ViewPaths:
     run_dir = Path(run_dir).resolve()
     output = Path(output_dir).resolve() if output_dir is not None else run_dir / "view"
     output.mkdir(parents=True, exist_ok=True)
     view = build_run_view(run_dir)
+    if outcome is not None:
+        # The calling product supplies its own verdict; the generic viewer only renders it.
+        view["run_summary"]["outcome"] = outcome
     paths = ViewPaths(
         output_dir=output,
         run_summary=output / "run_summary.json",
@@ -323,6 +326,14 @@ def render_dashboard_html(view: dict[str, Any], *, iteration_effect_name: str) -
         f'<section class="card"><div class="label">{escape(str(label))}</div><div class="value">{escape(str(value))}</div></section>'
         for label, value in cards
     )
+    outcome = summary.get("outcome") or {}
+    outcome_html = ""
+    if outcome:
+        outcome_html = '<section class="panel" aria-label="运行结果">' + "".join(
+            f'<{tag} style="white-space:pre-wrap;overflow-wrap:anywhere">{escape(str(outcome.get(key) or ""))}</{tag}>'
+            for key, tag in (("title", "h2"), ("detail", "p"), ("reason", "p"), ("next_step", "p"))
+            if outcome.get(key)
+        ) + "</section>"
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -360,6 +371,7 @@ def render_dashboard_html(view: dict[str, Any], *, iteration_effect_name: str) -
       <div class="sub">{escape(_summary_line(summary))}</div>
     </div>
   </header>
+  {outcome_html}
   <div class="cards">{card_html}</div>
   <section class="panel">
     <h2>迭代效果</h2>
@@ -401,6 +413,9 @@ def render_summary_markdown(view: dict[str, Any]) -> str:
         "## 时间线",
         "",
     ]
+    outcome = summary.get("outcome") or {}
+    if outcome:
+        lines[2:2] = [str(outcome[key]) for key in ("title", "detail", "reason", "next_step") if outcome.get(key)] + [""]
     for item in timeline:
         lines.append(f"- {item['title']}：{item['summary']}")
     lines.append("")

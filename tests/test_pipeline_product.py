@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from autopipeline.cli import main
 from autopipeline.project import initialize
@@ -87,6 +88,19 @@ class PipelineProductTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         report = json.loads((run / "final_verification/verification_report.json").read_text())
         self.assertFalse(report["require_no_regression"])
+
+    def test_report_failure_preserves_verification_and_offers_retry(self):
+        path = self.fixture()
+        run = self.root / "report-failure"
+        with patch("autopipeline.pipeline_cli.write_product_view", side_effect=OSError("disk full")):
+            code, output = self.command("pipeline", "evaluate", "--spec", str(path), "--run-dir", str(run))
+        self.assertEqual(code, 0, output)
+        self.assertIn("报告生成失败", output)
+        self.assertIn("autopipeline report", output)
+        receipt = json.loads((run / "result.json").read_text())
+        self.assertTrue(receipt["verified"])
+        self.assertEqual(receipt["status"], "verified")
+        self.assertEqual(self.command("report", str(run))[0], 0)
 
     def test_added_undeclared_python_file_is_rejected(self):
         path = self.fixture()

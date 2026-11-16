@@ -64,9 +64,10 @@ autopipeline pipeline evaluate --spec workspace/demo/pipeline.json --run-dir wor
 autopipeline report workspace/demo/runs/baseline
 ```
 
-看到 `Status: verified` 表示这次候选通过最终评估。打开
-`workspace/demo/runs/baseline/view/dashboard.html` 查看报告，或直接阅读同目录的
+终端首先解释结果：“评估通过”表示所选实现通过最终验证，不代表提速。
+打开 `workspace/demo/runs/baseline/view/dashboard.html` 查看报告，或阅读同目录的
 `summary.md`。初始候选与参考相同，因此这里验证的是产品流程，不是优化收益。
+每一步都会打印可直接复制的下一步命令；创建的项目目录内也包含独立使用说明。
 
 继续导出并重新验证：
 
@@ -76,7 +77,8 @@ autopipeline pipeline evaluate --spec workspace/demo-export/pipeline.json \
   --candidate workspace/demo-export/candidate --run-dir workspace/demo-export/runs/recheck
 ```
 
-目录已存在时请换新名称，工具不会覆盖旧结果。只有 wheel、已有 PyTorch 或需要
+目录已存在时请换新名称，工具不会覆盖旧结果。重复评估可省略 `--run-dir`，
+工具会创建带时间戳的新目录并打印路径。只有 wheel、已有 PyTorch 或需要
 纯配置检查时，参见[安装方式](docs/quickstart.md#安装方式)。
 
 ## 让 agent 开始优化
@@ -97,6 +99,11 @@ autopipeline report workspace/demo/runs/search
 `init`、`check`、`evaluate` 不调用模型服务；`run` 会使用已配置的 agent 额度。
 调用次数限制不是金额上限。以上只给 executor 配置模型，planner/reflector
 使用本地策略。其他 agent 通过 `--executor-command` 接入，见[使用指南](docs/quickstart.md#配置-agent)。
+
+常用参数见 `autopipeline pipeline run --help`；完整角色与集成参数见
+`autopipeline pipeline run --help-all`。默认帮助保留设备、预算与费用说明。
+失败或中断后使用 `autopipeline report RUN_DIR` 查看原因和下一步；报告生成成功
+不代表候选通过验证。
 
 在 NVIDIA 服务器上，先准备兼容驱动的 CUDA PyTorch，创建一个新的
 `--device cuda` 工作负载，再执行相同的 check → evaluate → run 流程。

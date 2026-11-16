@@ -23,7 +23,7 @@ autopipeline pipeline examples
 如果已有匹配的 PyTorch 环境，可去掉 extra，仅安装基础包。
 
 ```sh
-python -m pip install '/path/to/auto_pipeline-1.4.0a4-py3-none-any.whl[cpu]'
+python -m pip install '/path/to/auto_pipeline-1.4.0a5-py3-none-any.whl[cpu]'
 autopipeline --version
 ```
 
@@ -58,6 +58,9 @@ my-pipeline/
     ├── candidate.py       # 默认允许 agent 修改的实现
     └── workload.json      # 设备、dtype、预热、计时与检查配置
 ```
+
+项目内的 README 可独立使用：先给出评估、报告、导出与复验流程，再介绍 agent。
+终端每一步都会打印下一步命令，包含可复制的实际路径。
 
 | 配置位置 | 内容与默认值 |
 | --- | --- |
@@ -150,12 +153,19 @@ autopipeline report my-pipeline/runs/search
 原生 pipeline 当前只允许串行分支测量。确认一次完整编辑和复验成功后，再逐步
 增加轮数、候选数量或工作负载规模；不因没有提速直接加大预算。
 
+`autopipeline pipeline run --help` 展示常用连接参数、搜索规模、调用上限与超时；
+`autopipeline pipeline run --help-all` 展示完整参数。已有高级参数仍可直接使用，
+不需要另一个执行模式。省略 `--run-dir` 会在 spec 旁的 `runs/` 下创建带时间戳的
+目录，运行前打印设备、可编辑文件、预算和实际目录。
+
 其他 coding agent 可通过命令接入；协议实现见[开发者入口](dev/README.md#接入其他-coding-agent)。
 正常使用内置后端无需了解内部消息格式。
 
 ## 结果与排错
 
-先看终端状态与 result.json，再看报告；不要仅以退出码判断是否提速。
+先看终端的结果解释，或执行 `autopipeline report RUN_DIR`。终端、HTML 和 Markdown
+报告优先说明评估通过、找到改进、未找到改进、失败或中断，再提供过程指标。
+result.json 保留机器可读状态；不要仅以退出码判断是否提速。
 
 | 状态 | 用户应如何理解 |
 | --- | --- |
@@ -171,14 +181,12 @@ autopipeline report my-pipeline/runs/search
 | 路径 | 用途 |
 | --- | --- |
 | result.json | 最终状态、候选、文件哈希与复验结论 |
-| input/、environment.json | 本次冻结的参考/配置，以及环境版本 |
-| search_state.json、tree_events.jsonl | 搜索过程和预算使用记录 |
-| nodes/*/agent/ | agent 请求、输出、超时与失败诊断 |
-| nodes/*/verification/ | 参考/候选测量及 evaluator 标准输出和错误 |
 | promoted_pipeline/ | 最终选中代码，也可能是未改变的基线 |
-| promoted_pipeline/.autopipeline/ | profiler trace 与算子统计 |
-| final_verification/ | 最终独立测量与判定报告 |
 | view/dashboard.html、view/summary.md | 浏览器报告与文本摘要 |
+
+详细运行记录与日志位置见[开发者诊断参考](dev/run-artifacts.md)。运行在很早阶段失败，
+只要留下 result.json，report 也能解释结果。`report` 退出 0 表示报告已生成，
+不代表运行成功；显示“尚未完成”也不保证进程仍在运行。
 
 常见故障：
 
@@ -186,13 +194,13 @@ autopipeline report my-pipeline/runs/search
 | --- | --- |
 | 找不到 autopipeline 或 torch | 激活安装时使用的环境，检查 python 和 autopipeline 是否来自同一环境 |
 | CUDA 不可用 | 检查 CUDA PyTorch 与设备可见性；需要 CPU 时重新 init --device cpu |
-| 目录已存在 | 为新项目、运行或导出换名称；不要删除旧结果来掩盖失败 |
+| 目录已存在 | 项目和导出换新名称；评估/搜索可省略 --run-dir 自动创建新目录 |
 | No executor configured / codex is not on PATH | 配置 executor，并在执行机器安装 Codex；单纯评估使用 evaluate |
 | agent 认证失败或超时 | 检查 nodes/*/agent 日志、同机登录和网络；确认原因后再重试或调整超时 |
 | 数值、结构或 state_dict 失败 | 对比候选与固定参考；修正实现，不让 agent 放宽验收容差 |
 | 模型资产哈希改变 | 恢复原权重；若有意更换模型，重新初始化，不复用旧比较 |
 | 导出提示文件已改变 | 在新目录重新评估后再导出，不修改验证收据 |
-| report 找不到 search_state.json | 传入实际运行目录，而不是项目根目录或导出目录 |
+| report 找不到运行记录 | 传入执行时打印的运行目录，而不是项目根目录或导出目录 |
 
 向维护者提供版本、命令、设备环境、result.json 与相关脱敏日志；不要上传
 访问令牌、私有权重或含敏感输入的 trace。安全问题按[安全说明](../SECURITY.md)处理。

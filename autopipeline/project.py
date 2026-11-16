@@ -74,17 +74,33 @@ def initialize(destination: Path, *, source: Path | None, device: str, dtype: st
             "timeout_seconds": 600, "metadata": {"example": "custom" if source else example, "runtime": "pytorch", "numerical_tolerances": {"atol": 1e-5, "rtol": 1e-4}}}
     write_json(destination / "pipeline.json", spec)
     (destination / "README.md").write_text(
-        "# Inference workspace\n\n"
-        "`workload/reference.py` supplies Model, get_inputs(), and optional get_init_inputs().\n"
-        "`workload/candidate.py` supplies ModelNew with the same constructor and state_dict.\n"
-        "Inputs are positional lists/tuples or keyword dictionaries. Outputs are tensors or nested containers.\n"
-        "Keep model weights/assets local and record your dependency versions; no weights are downloaded automatically.\n\n"
+        "# 模型工作区\n\n"
+        f"设备：{device}；数值类型：{dtype}。以下命令从本 README 所在目录执行。\n"
+        "已安装 AutoPipeline 并准备好该设备的 PyTorch 后，先完成评估和导出。\n"
+        "初始化不会下载权重或调用 agent；评估执行本地代码，不调用 agent 服务。\n\n"
+        "## 先得到可复验的结果\n\n"
         "```sh\nautopipeline pipeline check --spec pipeline.json\n"
         "autopipeline pipeline evaluate --spec pipeline.json --run-dir runs/baseline\n"
-        "autopipeline pipeline run --spec pipeline.json --run-dir runs/search --executor-backend codex-app-server\n"
-        "autopipeline report runs/search\nautopipeline pipeline export runs/search --output-dir exported\n```\n\n"
-        "Adjust fixed workload.json before running. CUDA is never silently replaced by CPU.\n"
-        "Changing the workload or tolerance defines a new comparison; do not compare scores across different configurations.\n",
+        "autopipeline report runs/baseline\n"
+        "autopipeline pipeline export runs/baseline --output-dir exported\n"
+        "autopipeline pipeline evaluate --spec exported/pipeline.json --candidate exported/candidate\n```\n\n"
+        "评估通过不代表提速：初始候选沿用参考实现。查看终端解释或 runs/baseline/view/dashboard.html。\n"
+        "重复评估时省略 --run-dir 会创建新目录；已有项目、运行和导出均不覆盖。\n\n"
+        "## 再让 agent 优化\n\n"
+        "先在执行机器配置并认证 Codex，或用 --executor-command 接入其他 agent。\n"
+        "下面的 run 会使用服务额度；调用次数不是金额上限，优化不保证提速。\n\n"
+        "```sh\nautopipeline pipeline run --spec pipeline.json --executor-backend codex-app-server "
+        "--max-rounds 1 --children-per-expansion 1 --max-agent-calls 2 --max-probe-calls 2\n```\n\n"
+        "运行会打印实际目录、结果含义和下一步命令。先处理失败原因，再重试或增加预算。\n"
+        "中断不会自动续跑；可用 autopipeline report RUN_DIR 查看部分记录。\n\n"
+        "## 需要自定义时\n\n"
+        "workload/reference.py 定义 Model、get_inputs() 和可选 get_init_inputs()。\n"
+        "workload/candidate.py 定义同构造参数、同 state_dict 的 ModelNew；默认仅允许修改此文件。\n"
+        "输入支持位置参数或关键字参数；输出支持 tensor 及嵌套容器。\n"
+        "运行前固定 workload/workload.json；CUDA 不会自动回退 CPU。\n"
+        "改变设备、输入、权重或容差意味着新的比较，不能混用加速比。\n"
+        "外部权重不会随导出复制，复验时需要相同资源与依赖。代码按本地程序执行，工作区复制不是系统安全沙箱。\n\n"
+        "常用参数：autopipeline pipeline run --help；完整参数：autopipeline pipeline run --help-all。\n",
         encoding="utf-8")
     return destination / "pipeline.json"
 

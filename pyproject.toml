@@ -1,6 +1,6 @@
 [project]
 name = "auto-pipeline"
-version = "1.4.0a4"
+version = "1.4.0a5"
 description = "Agent-first pipeline and GPU kernel optimization toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -65,7 +65,7 @@ Repository = "https://github.com/LyrineYang/Autopipeline"
 Issues = "https://github.com/LyrineYang/Autopipeline/issues"
 
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

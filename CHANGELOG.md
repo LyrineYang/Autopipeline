@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Task-oriented user workflow (1.4.0a5)
+
+- Subcommand help separates common options from `COMMAND --help-all`; existing
+  options remain accepted, with device defaults and call limits visible.
+- Init, check, evaluation and export explain effects and print copyable next
+  commands. Generated project guides complete the no-agent path before search.
+- Terminal, Markdown and HTML reports lead with the product outcome, including
+  no improvement, failure and interruption. Early failures can be inspected
+  before search state exists; raw result status and JSON readiness remain compatible.
+- Separate CLI definitions and presentation from workload execution. Preserve
+  legacy commands, design documents and independent benchmark lines.
+- Correct the build-backend lower bound for the declared license metadata.
+
 ### User and developer entrypoints (1.4.0a4)
 
 - Default CLI help now presents the product workflow; `--help-all` exposes

@@ -4,6 +4,19 @@ AutoPipeline is an independent project built from AutoKernel. The alpha product 
 an installable pipeline workflow backed by a task-agnostic tree runtime, while
 retaining the source-based kernel tools.
 
+## Product Engineering Standard
+
+Use the [product engineering standard](docs/dev/product-engineering-standard.md)
+for public interfaces, extension contracts, package boundaries, documentation,
+compatibility, and release acceptance. It defines requirements for new and changed
+behavior and identifies existing gaps; it does not claim the product already meets
+every requirement. Keep user instructions separate from maintenance details, and
+treat documented extension interfaces as supported product surfaces.
+
+For each change, describe the user scenario, compatibility impact, relevant
+validation, and the next decision-relevant check or resource need. Put this in the
+PR rather than creating another planning document.
+
 ## Agent-Led Engineering
 
 The human supplies intent, priorities, access, and consequential commitments.
@@ -39,7 +52,9 @@ and [scheduled tasks guide](https://learn.chatgpt.com/docs/automations).
 
 ## Local Checks
 
-Run these before opening a pull request:
+For runtime or packaging changes, run the relevant checks below before opening
+a pull request. Documentation-only changes need link and usage review plus
+`git diff --check`; run examples when their commands or promised behavior change.
 
 ```bash
 python3 -m unittest discover -s tests
@@ -48,11 +63,6 @@ python3 -m autopipeline --help
 python3 -m autopipeline doctor --no-gpu
 git diff --check
 python3 -m pip wheel . --no-deps --no-build-isolation -w /private/tmp/autopipeline-wheel
-cd site
-npm ci
-npm run lint
-npm run build
-npm audit --omit=dev --audit-level=high
 ```
 
 The wheel command requires `setuptools` and `wheel` in the active Python
@@ -77,8 +87,9 @@ lineage and read-only comparison.
 `codex/level5` and `codex/apimetric` are independent benchmark development lines.
 Keep their task definitions, baselines, scoring and benchmark metrics there.
 Share a callable task/evaluator contract with the product; do not merge benchmark
-experiments into the product to make an integration test convenient. Existing
-`codex/tree` and release-preparation branches are historical integration work.
+experiments into the product to make an integration test convenient. Tree and
+release-preparation work has been integrated into the product history; it is not
+an additional active product line.
 
 ## Boundaries
 
@@ -103,3 +114,5 @@ Update the relevant docs when behavior changes:
 - `docs/architecture.md` for module boundaries
 - `docs/agent_contract.md` for role contracts
 - `docs/sensing.md` for probe behavior
+- `docs/dev/README.md` for extension and maintenance entrypoints
+- `docs/dev/product-engineering-standard.md` for durable product engineering rules
