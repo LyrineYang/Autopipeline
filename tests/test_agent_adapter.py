@@ -255,14 +255,19 @@ class CommandAgentAdapterTests(unittest.TestCase):
                 elif method == "initialized":
                     continue
                 elif method == "thread/start":
+                    assert message["params"]["sandbox"] == "workspace-write"
+                    assert message["params"]["approvalPolicy"] == "never"
                     send({"id": message["id"], "result": {"thread": {"id": "thread-test"}}})
                     send({"method": "thread/started", "params": {"thread": {"id": "thread-test"}}})
                 elif method == "turn/start":
+                    assert "sandbox" not in message["params"]
+                    assert message["params"]["effort"] == "medium"
+                    assert "TREE_OUTPUT_PATH" not in message["params"]["input"][0]["text"]
                     Path("kernel.py").write_text("optimized\\n", encoding="utf-8")
                     send({"id": message["id"], "result": {"turn": {"id": "turn-test", "status": "inProgress"}}})
                     send({"method": "turn/started", "params": {"turn": {"id": "turn-test", "status": "inProgress"}}})
                     send({"method": "turn/diff/updated", "params": {"threadId": "thread-test", "turnId": "turn-test", "diff": "--- a/kernel.py\\n+++ b/kernel.py\\n"}})
-                    send({"method": "thread/tokenUsage/updated", "params": {"totalTokens": 123}})
+                    send({"method": "thread/tokenUsage/updated", "params": {"tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 23, "totalTokens": 123, "cachedInputTokens": 12}}}})
                     send({"method": "item/completed", "params": {"item": {"id": "cmd-1", "type": "commandExecution", "status": "completed", "exitCode": 0, "durationMs": 7}}})
                     send({"method": "item/completed", "params": {"item": {"id": "file-1", "type": "fileChange", "status": "completed", "changes": [{"path": "kernel.py", "kind": "update", "diff": "fake"}]}}})
                     send({"method": "item/completed", "params": {"item": {"id": "msg-1", "type": "agentMessage", "text": "edited kernel"}}})
@@ -277,10 +282,15 @@ class CommandAgentAdapterTests(unittest.TestCase):
                     backend="codex-app-server",
                     command=self._python_command(script),
                     model="gpt-test",
+                    reasoning_effort="medium",
                 )
             },
         )
 
+        from tree.budget import BudgetLedger
+
+        ledger = BudgetLedger()
+        adapter.set_budget_ledger(ledger)
         execution = adapter.execute(self.task, self.snapshot, self.root, self.parent, self.node)
 
         self.assertEqual(execution.status, "completed")
@@ -289,7 +299,10 @@ class CommandAgentAdapterTests(unittest.TestCase):
         self.assertEqual(execution.metadata["backend"], "codex_app_server")
         self.assertEqual(execution.metadata["thread_id"], "thread-test")
         self.assertEqual(execution.metadata["turn_id"], "turn-test")
-        self.assertEqual(execution.metadata["token_usage"]["totalTokens"], 123)
+        self.assertEqual(execution.metadata["token_usage"]["tokenUsage"]["total"]["totalTokens"], 123)
+        self.assertEqual(ledger.total_tokens, 123)
+        self.assertEqual(ledger.prompt_tokens, 100)
+        self.assertEqual(ledger.completion_tokens, 23)
         logs_dir = Path(self.node.node_dir) / "agent" / "execute"
         self.assertTrue((logs_dir / "app_server_events.jsonl").exists())
         self.assertIn("turn_completed", (logs_dir / "activity.jsonl").read_text(encoding="utf-8"))

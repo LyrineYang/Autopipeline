@@ -226,8 +226,8 @@ def run_codex_app_server_role(
                             }
                         ],
                         "cwd": str(cwd),
-                        "sandbox": "workspaceWrite",
                         "approvalPolicy": "never",
+                        **({"effort": role_config.reasoning_effort} if role_config.reasoning_effort else {}),
                     },
                 },
             )
@@ -319,6 +319,9 @@ def run_codex_app_server_role(
                 "summary": str(exc),
                 "metadata": metadata,
             }
+    usage = _turn_token_usage(state)
+    if usage:
+        output["llm_usage"] = usage
     status_payload = {
         "status": status,
         "action": action,
@@ -394,6 +397,8 @@ class _AppServerState:
         self.thread_resumed = False
         self.latest_diff: str = ""
         self.token_usage: dict[str, Any] = {}
+        self.previous_token_totals: dict[str, int] = {}
+        self.turn_error = ""
         self.agent_messages: list[str] = []
         self.commands: list[dict[str, Any]] = []
         self.file_changes: list[dict[str, Any]] = []
@@ -520,6 +525,15 @@ def _handle_message(
     elif method == "thread/tokenUsage/updated":
         params = message.get("params")
         if isinstance(params, dict):
+            if state.thread_resumed and not state.token_usage:
+                total = _dig(params, "tokenUsage", "total")
+                last = _dig(params, "tokenUsage", "last")
+                if isinstance(total, dict) and isinstance(last, dict):
+                    state.previous_token_totals = {
+                        key: max(0, value - last[key])
+                        for key, value in total.items()
+                        if isinstance(value, int) and isinstance(last.get(key), int)
+                    }
             state.token_usage = params
         _record_activity(activity_path, "token_usage_updated", {})
     elif method == "item/completed":
@@ -528,6 +542,7 @@ def _handle_message(
         turn = _dig(message, "params", "turn")
         if isinstance(turn, dict):
             state.turn_status = str(turn.get("status") or "")
+            state.turn_error = str(_dig(turn, "error", "message") or "")
             if turn.get("id"):
                 state.turn_id = str(turn["id"])
         _record_activity(
@@ -692,7 +707,7 @@ def _thread_params(*, cwd: Path, role_config: AgentRoleConfig, sensing) -> dict[
     params: dict[str, Any] = {
         "cwd": str(cwd),
         "approvalPolicy": "never",
-        "sandbox": "workspaceWrite",
+        "sandbox": "workspace-write",
         "serviceName": "autokernel_tree_agent",
     }
     if role_config.model:
@@ -719,12 +734,17 @@ def _turn_prompt(
     role: str,
     output_mode: str,
 ) -> str:
+    # These instructions belong to the subprocess file protocol, not App Server.
+    file_protocol = ("TREE_OUTPUT_PATH", "TREE_TELEMETRY_PATH", "TREE_SENSING_PATH", "TREE_PROBE_REQUESTS_PATH", "changed=false")
+    prompt = "\n".join(
+        line for line in prompt.splitlines()
+        if not any(name in line for name in file_protocol)
+    )
     if output_mode == "json_message":
         role_guidance = (
             f"You are the {role} for one tree-search {action} step.\n\n"
             "Return exactly one JSON object in your final message. Do not wrap it in markdown. "
-            "Do not write TREE_OUTPUT_PATH even if the embedded prompt mentions it; this "
-            "app-server runtime captures your final JSON message directly. Do not edit files "
+            "App Server captures your final JSON message directly. Do not edit files "
             "unless the embedded task explicitly asks for a code change.\n\n"
         )
     else:
@@ -732,8 +752,8 @@ def _turn_prompt(
             "You are the executor for one tree-search branch.\n\n"
             "Work only inside the current sandbox. Make one focused code change if it is likely "
             "to improve the candidate. Do not edit benchmark control files unless the payload "
-            "explicitly allows it. Do not write framework result JSON; the runtime will summarize "
-            "your file changes after the turn. When more evidence is needed, call run_sensing_probe "
+            "explicitly allows it. Briefly summarize what changed or why you left the candidate unchanged. "
+            "App Server captures file changes after the turn. When more evidence is needed, call run_sensing_probe "
             "instead of editing the probe request file manually.\n\n"
         )
     return role_guidance + (
@@ -755,6 +775,23 @@ def _thread_id_from_response(message: dict[str, Any]) -> str:
     return str(value or "")
 
 
+def _turn_token_usage(state: _AppServerState) -> dict[str, int]:
+    counts = _dig(state.token_usage, "tokenUsage", "total")
+    if not isinstance(counts, dict):
+        counts = state.token_usage
+    fields = {
+        "inputTokens": "prompt_tokens",
+        "outputTokens": "completion_tokens",
+        "totalTokens": "total_tokens",
+        "cachedInputTokens": "cached_input_tokens",
+    }
+    return {
+        field: max(0, counts[key] - state.previous_token_totals.get(key, 0))
+        for key, field in fields.items()
+        if isinstance(counts.get(key), int)
+    }
+
+
 def _result_status(state: _AppServerState) -> str:
     status = state.turn_status.lower()
     if status == "completed" or not status:
@@ -766,6 +803,8 @@ def _result_status(state: _AppServerState) -> str:
 
 def _summary(state: _AppServerState, changed: bool) -> str:
     status = state.turn_status or "completed"
+    if state.turn_error:
+        return f"Codex app-server turn {status}: {state.turn_error}"
     if state.agent_messages:
         tail = state.agent_messages[-1].strip().splitlines()[0][:240]
         return f"Codex app-server turn {status}; {tail}"

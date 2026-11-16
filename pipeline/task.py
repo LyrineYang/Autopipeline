@@ -381,6 +381,8 @@ class PipelineTask(OptimizationTask):
         diagnoses = _pipeline_diagnoses(observation)
         treatment_families = _pipeline_treatment_families(diagnoses)
         branch_limit = max(1, int(limit or 1))
+        native_pipeline = (self.spec.metadata or {}).get("runtime") == "pytorch"
+        profiler = parent_metrics.get("profiler") or {}
         branch_cards = _pipeline_branch_cards(
             spec=self.spec,
             observation=observation,
@@ -388,6 +390,25 @@ class PipelineTask(OptimizationTask):
             treatment_families=treatment_families,
             limit=branch_limit,
         )
+        if native_pipeline and len(branch_cards) < branch_limit and profiler.get("status") == "completed":
+            branch_cards.append(Hypothesis(
+                id="reduce-operator-cost",
+                title="Reduce the cost of profiled operators",
+                core_hypothesis="Use the operator profile to identify expensive primitives and try equivalent fused or vectorized operations.",
+                idea_id="operator-cost",
+                implementation_variant="equivalent-operator-substitution",
+                scope="pipeline",
+                target=self.spec.target_path,
+                editable_path_hints=list(self.spec.editable_paths),
+                family="pipeline_latency",
+                verification_intent=["end_to_end_ms", "correctness"],
+                supporting_evidence=["The evaluator recorded an operator profile for the current implementation."],
+                disallowed_directions=_pipeline_disallowed_directions(),
+            ))
+        if native_pipeline:
+            # The same direction can refine a different parent or use a previous rejection as evidence.
+            for card in branch_cards:
+                card.id = f"{card.id}:{parent.id}:{root.rounds_completed + 1}"
         symptoms = _pipeline_symptoms(observation)
         focus_target = str(observation.get("slowest_stage") or self.spec.target_path)
         region_graph = _pipeline_region_graph(self.spec, observation, symptoms)
@@ -434,8 +455,9 @@ class PipelineTask(OptimizationTask):
         branch_budget = {
             "children": min(branch_limit, len(branch_cards)) if branch_cards else branch_limit,
             "beam_width": min(int((upper_bounds or {}).get("beam_width", branch_limit)), max(1, len(branch_cards))),
-            "rounds": 1,
         }
+        if not native_pipeline:
+            branch_budget["rounds"] = 1
         return {
             "task_kind": "pipeline",
             "pipeline_spec": str(self.spec.path),

@@ -264,6 +264,22 @@ class PipelineBridgeTests(unittest.TestCase):
             self.assertEqual(region_artifact["bottleneck_region"]["evaluation"]["entrypoint"], ["{python}", "evaluate_pipeline.py"])
             self.assertNotEqual(packet.branch_cards[0].work_unit["region_id"], "pipeline_config.json")
 
+            task.spec.metadata["runtime"] = "pytorch"
+            parent.evaluation_result.metrics = {
+                "end_to_end_ms": 1.0,
+                "profiler": {"status": "completed"},
+            }
+            planner = Planner()
+            bounds = {"children_per_expansion": 2, "beam_width": 2, "max_rounds": 4}
+            first = planner.build_packet(task, task.snapshot(), root_memory, parent, 2, upper_bounds=bounds)
+            self.assertEqual(first.search_policy.branch_budget.children, 2)
+            self.assertEqual(first.search_policy.branch_budget.beam_width, 2)
+            self.assertIsNone(first.search_policy.branch_budget.rounds)
+            self.assertEqual([card.idea_id for card in first.branch_cards], ["end-to-end-latency", "operator-cost"])
+            root_memory.rounds_completed = 1
+            next_round = planner.build_packet(task, task.snapshot(), root_memory, parent, 2, upper_bounds=bounds)
+            self.assertNotEqual(first.branch_cards[0].id, next_round.branch_cards[0].id)
+
     def test_setup_pipeline_workspace_copies_source_and_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
