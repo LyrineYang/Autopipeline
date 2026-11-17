@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html import escape
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -10,23 +11,24 @@ from .run_artifacts import count_candidates, format_counts, read_events, read_ob
 
 
 METRIC_LABELS = {
-    "correctness": ("正确性", "", "gate"),
-    "speedup_vs_pytorch": ("相对 PyTorch 加速比", "x", "objective"),
-    "speedup": ("加速比", "x", "objective"),
-    "throughput_tflops": ("吞吐量", "TFLOPS", "display"),
-    "bandwidth_gb_s": ("带宽", "GB/s", "display"),
+    "correctness": ("Correctness", "", "gate"),
+    "speedup_vs_pytorch": ("Speedup over PyTorch", "x", "objective"),
+    "speedup": ("Speedup", "x", "objective"),
+    "throughput_tflops": ("Throughput", "TFLOPS", "display"),
+    "bandwidth_gb_s": ("Bandwidth", "GB/s", "display"),
     "forward_latency_ms": ("Forward latency", "ms", "objective"),
-    "end_to_end_ms": ("端到端延迟", "ms", "objective"),
-    "latency_ms": ("延迟", "ms", "objective"),
-    "tokens_per_second": ("token 吞吐量", "tok/s", "objective"),
-    "cost_per_token": ("每 token 成本", "", "objective"),
-    "bench_time_seconds": ("基准测试耗时", "s", "cost"),
+    "end_to_end_ms": ("End-to-end latency", "ms", "objective"),
+    "latency_ms": ("Latency", "ms", "objective"),
+    "tokens_per_second": ("Token throughput", "tok/s", "objective"),
+    "cost_per_token": ("Cost per token", "", "objective"),
+    "bench_time_seconds": ("Benchmark time", "s", "cost"),
     "ranking_score": ("Ranking score", "", "objective"),
-    "score_value": ("评分值", "", "objective"),
-    "score": ("评分值", "", "objective"),
+    "score_value": ("Score", "", "objective"),
+    "score": ("Score", "", "objective"),
 }
 
 LOWER_IS_BETTER = {"forward_latency_ms", "end_to_end_ms", "latency_ms", "cost_per_token", "bench_time_seconds"}
+FAILURE_OUTCOMES = {"failed", "timeout", "rejected_compile", "rejected_runtime", "rejected_correctness"}
 DISPLAY_PRIORITY = [
     "throughput_tflops",
     "speedup_vs_pytorch",
@@ -96,6 +98,7 @@ def build_run_view(run_dir: Path) -> dict[str, Any]:
         primary_metric=primary_metric,
         display_metric=display_metric,
     )
+    run_summary["result"] = _run_result(run_dir, final_result, budget)
     human_timeline = _build_human_timeline(run_summary, attempts, branches)
 
     return {
@@ -106,6 +109,71 @@ def build_run_view(run_dir: Path) -> dict[str, Any]:
         "human_timeline": human_timeline,
         "family_summary": family_summary,
     }
+
+
+def _run_result(run_dir: Path, final_result: dict, budget: dict) -> dict:
+    receipt = read_object(run_dir / "result.json")
+    final = _dict_value(receipt.get("final_verification")) or _dict_value(final_result.get("final_verify"))
+    report = read_object(run_dir / "final_verification" / "verification_report.json")
+    evidence = report or _dict_value(final.get("verification"))
+    correctness = _dict_value(evidence.get("correctness")).get("passed")
+    numerical_error = _dict_value(evidence.get("numerical_error")).get("passed")
+    if numerical_error is False:
+        correctness = False
+
+    reference = _dict_value(_dict_value(report.get("reference")).get("metrics"))
+    candidate = _dict_value(_dict_value(report.get("candidate")).get("metrics")) or _dict_value(final.get("metrics"))
+    if correctness is None and candidate.get("correctness") in {"PASS", "FAIL"}:
+        correctness = candidate["correctness"] == "PASS"
+
+    performance = _dict_value(evidence.get("performance"))
+    native_forward = str(candidate.get("measurement_scope", "")).startswith("model forward")
+    latency_key = next(
+        (key for key in ("forward_latency_ms", "end_to_end_ms", "latency_ms")
+         if _number(reference.get(key)) is not None or _number(candidate.get(key)) is not None),
+        "end_to_end_ms",
+    )
+    reference_latency = _number(reference.get(latency_key))
+    candidate_latency = _number(candidate.get(latency_key))
+    if latency_key == "end_to_end_ms" or native_forward:
+        # Native releases before a7 used end_to_end_ms for forward timing.
+        if reference_latency is None:
+            reference_latency = _number(performance.get("reference_end_to_end_ms"))
+        if candidate_latency is None:
+            candidate_latency = _number(performance.get("candidate_end_to_end_ms"))
+    latency_label = "forward latency" if native_forward else _metric_spec(latency_key)["label"].lower()
+    if reference_latency is None and candidate_latency is None:
+        latency_label = "latency"
+
+    usage = _dict_value(budget.get("agent_usage"))
+    calls = _dict_value(receipt.get("search_counts")).get("agent_calls")
+    return {
+        "correctness_passed": correctness,
+        "latency_label": latency_label,
+        "reference_latency_ms": reference_latency,
+        "candidate_latency_ms": candidate_latency,
+        "duration_seconds": _number(receipt.get("duration_seconds")),
+        "agent_calls": usage.get("agent_calls") if calls is None else calls,
+        "total_tokens": usage.get("total_tokens"),
+    }
+
+
+def result_rows(result: dict) -> list[tuple[str, str]]:
+    def with_unit(key: str, unit: str) -> str:
+        value = result[key]
+        return f"{_format_number(value)} {unit}" if value is not None else "Unavailable"
+
+    correctness = {True: "Passed", False: "Failed"}.get(result["correctness_passed"], "Unavailable")
+    latency_label = result["latency_label"]
+    calls, tokens = result["agent_calls"], result["total_tokens"]
+    return [
+        ("Final correctness", correctness),
+        (f"Reference {latency_label}", with_unit("reference_latency_ms", "ms")),
+        (f"Candidate {latency_label}", with_unit("candidate_latency_ms", "ms")),
+        ("Run time", with_unit("duration_seconds", "s")),
+        ("Agent calls", f"{calls:,}" if calls is not None else "Unavailable"),
+        ("Agent tokens recorded", f"{tokens:,}" if tokens is not None else "Unavailable"),
+    ]
 
 
 def write_run_view(run_dir: Path, output_dir: Path | None = None, *, outcome: dict[str, str] | None = None) -> ViewPaths:
@@ -145,256 +213,180 @@ def write_run_view(run_dir: Path, output_dir: Path | None = None, *, outcome: di
 
 
 def render_iteration_effect_svg(run_summary: dict[str, Any], attempts: list[dict[str, Any]]) -> str:
-    width = 1480
-    height = 780
-    margin_left = 92
-    margin_right = 56
-    margin_top = 138
-    margin_bottom = 82
-    plot_w = width - margin_left - margin_right
-    plot_h = height - margin_top - margin_bottom
-    display_metric = _dict_value(run_summary.get("display_metric"))
-    label = str(display_metric.get("label") or "评分值")
-    unit = str(display_metric.get("unit") or "")
-    direction = str(display_metric.get("direction") or "higher")
-
-    points = [item for item in attempts if _number(item.get("display_value")) is not None]
+    points = [
+        (item, value) for item in attempts
+        if not item.get("display_imputed") and (value := _number(item.get("display_value"))) is not None
+    ]
     if not points:
-        return _empty_svg(width, height, "没有可绘制的实验指标")
+        return _empty_svg(1040, 320, "No measured attempts")
 
-    values = [float(item["display_value"]) for item in points]
-    baseline_value = _number(_dict_value(run_summary.get("baseline")).get("display_value"))
-    if baseline_value is not None:
-        values.append(float(baseline_value))
-    y_min = min(values)
-    y_max = max(values)
-    if y_min == y_max:
-        y_min -= 1.0
-        y_max += 1.0
-    padding = (y_max - y_min) * 0.08
-    y_min = max(0.0, y_min - padding) if y_min >= 0 else y_min - padding
-    y_max = y_max + padding
-
-    x_min = min(int(item["experiment_index"]) for item in points)
-    x_max = max(int(item["experiment_index"]) for item in points)
-    if x_min == x_max:
-        x_max = x_min + 1
+    width, height = 1040, 320
+    left, right, top, bottom = 76, 1010, 25, 256
+    first = int(points[0][0]["experiment_index"])
+    last = max(first + 1, int(points[-1][0]["experiment_index"]))
+    low = min(value for _, value in points)
+    high = max(value for _, value in points)
+    padding = (high - low) * 0.08 or max(abs(low) * 0.05, 0.001)
+    low -= padding
+    high += padding
 
     def x_scale(index: int) -> float:
-        return margin_left + (index - x_min) / max(1, x_max - x_min) * plot_w
+        return left + (index - first) / (last - first) * (right - left)
 
     def y_scale(value: float) -> float:
-        return margin_top + (y_max - value) / max(1e-9, y_max - y_min) * plot_h
+        return top + (high - value) / (high - low) * (bottom - top)
 
-    family_segments = _family_segments(points)
-    family_colors = [
-        "#f3f7ff",
-        "#faf5ff",
-        "#fff8ea",
-        "#fff1f2",
-        "#effaf6",
-        "#f8fafc",
-    ]
+    metric = run_summary["display_metric"]
+    label = metric["label"] + (f" ({metric['unit']})" if metric["unit"] else "")
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
-        "<style>",
-        "text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#263043}",
-        ".muted{fill:#64748b}.small{font-size:13px}.axis{stroke:#dbe3ef;stroke-width:1}.grid{stroke:#eef2f7;stroke-width:1}",
-        ".best{fill:none;stroke:#19b58b;stroke-width:3}.baseline{stroke:#818cf8;stroke-width:2;stroke-dasharray:8 6}",
-        "</style>",
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
+        f' viewBox="0 0 {width} {height}" role="img" aria-label="Iteration map">',
+        '<style>text{font:13px system-ui,sans-serif;fill:#475569}'
+        '.grid{stroke:#e2e8f0}.best{fill:none;stroke:#087e72;stroke-width:2.5}</style>',
         '<rect width="100%" height="100%" fill="#ffffff"/>',
-        f'<text x="{width/2}" y="48" font-size="26" font-weight="700" text-anchor="middle">{escape(str(run_summary.get("title", "AutoKernel Run Dashboard")))}</text>',
-        f'<text x="{width/2}" y="88" font-size="16" class="muted" text-anchor="middle">{escape(_summary_line(run_summary))}</text>',
+        f'<text transform="translate(19 {(top + bottom) / 2}) rotate(-90)" text-anchor="middle">{escape(label)}</text>',
     ]
-    for idx, segment in enumerate(family_segments):
-        start_x = x_scale(segment["start"]) - 8
-        end_x = x_scale(segment["end"]) + 8
-        color = family_colors[idx % len(family_colors)]
-        parts.append(
-            f'<rect x="{start_x:.1f}" y="{margin_top}" width="{max(1, end_x-start_x):.1f}" height="{plot_h}" fill="{color}" opacity="0.82"/>'
-        )
-        parts.append(
-            f'<text x="{(start_x+end_x)/2:.1f}" y="{margin_top+28}" font-size="13" font-weight="700" fill="#64748b" text-anchor="middle">{escape(segment["family"])}</text>'
-        )
+    for tick in range(6):
+        value = high - (high - low) * tick / 5
+        y = y_scale(value)
+        parts.append(f'<line x1="{left}" y1="{y:.1f}" x2="{right}" y2="{y:.1f}" class="grid"/>')
+        parts.append(f'<text x="{left - 9}" y="{y + 4:.1f}" text-anchor="end">{_format_number(value)}</text>')
 
-    for i in range(6):
-        y = margin_top + plot_h * i / 5
-        value = y_max - (y_max - y_min) * i / 5
-        parts.append(f'<line x1="{margin_left}" y1="{y:.1f}" x2="{width-margin_right}" y2="{y:.1f}" class="grid"/>')
-        parts.append(f'<text x="{margin_left-12}" y="{y+5:.1f}" text-anchor="end" font-size="13" class="muted">{_format_number(value)}</text>')
+    stride = math.ceil((last - first) / 8)
+    for index in range(first, last + 1, stride):
+        x = x_scale(index)
+        parts.append(f'<text x="{x:.1f}" y="{bottom + 25}" text-anchor="middle">{index}</text>')
+    parts.append(f'<text x="{width / 2}" y="{height - 8}" text-anchor="middle">Attempt</text>')
 
-    for i in range(0, x_max - x_min + 1, max(1, (x_max - x_min) // 8 or 1)):
-        x = x_scale(x_min + i)
-        parts.append(f'<line x1="{x:.1f}" y1="{margin_top}" x2="{x:.1f}" y2="{margin_top+plot_h}" class="grid" opacity="0.55"/>')
-        parts.append(f'<text x="{x:.1f}" y="{height-46}" text-anchor="middle" font-size="13" class="muted">{x_min+i}</text>')
-
-    parts.append(f'<line x1="{margin_left}" y1="{margin_top+plot_h}" x2="{width-margin_right}" y2="{margin_top+plot_h}" class="axis"/>')
-    parts.append(f'<line x1="{margin_left}" y1="{margin_top}" x2="{margin_left}" y2="{margin_top+plot_h}" class="axis"/>')
-    parts.append(f'<text x="{width/2}" y="{height-16}" text-anchor="middle" font-size="15" class="muted">实验 attempt #</text>')
-    parts.append(
-        f'<text transform="translate(30 {margin_top+plot_h/2}) rotate(-90)" text-anchor="middle" font-size="15" class="muted">{escape(label + (f" ({unit})" if unit else ""))}</text>'
-    )
-
-    if baseline_value is not None:
-        y = y_scale(float(baseline_value))
-        parts.append(f'<line x1="{margin_left}" y1="{y:.1f}" x2="{width-margin_right}" y2="{y:.1f}" class="baseline"/>')
-        parts.append(
-            f'<text x="{width-margin_right-8}" y="{y-8:.1f}" text-anchor="end" font-size="13" fill="#6366f1">baseline {_format_number(float(baseline_value))}{escape(unit)}</text>'
-        )
-
+    best = None
     best_points = []
-    best_value = None
-    for item in sorted(points, key=lambda entry: int(entry["experiment_index"])):
-        value = float(item["display_value"])
-        if _is_better(value, best_value, direction):
-            best_value = value
-        best_points.append((x_scale(int(item["experiment_index"])), y_scale(float(best_value))))
-    path = " ".join(
-        ("M" if idx == 0 else "L") + f"{x:.1f},{y:.1f}"
-        for idx, (x, y) in enumerate(best_points)
-    )
-    parts.append(f'<path d="{path}" class="best"/>')
-
-    for item in points:
-        x = x_scale(int(item["experiment_index"]))
-        y = y_scale(float(item["display_value"]))
-        outcome = str(item.get("outcome_key", ""))
-        if outcome in {"failed", "timeout", "rejected_compile", "rejected_runtime", "rejected_correctness"}:
-            parts.append(f'<line x1="{x-6:.1f}" y1="{y-6:.1f}" x2="{x+6:.1f}" y2="{y+6:.1f}" stroke="#ef4444" stroke-width="3"/>')
-            parts.append(f'<line x1="{x+6:.1f}" y1="{y-6:.1f}" x2="{x-6:.1f}" y2="{y+6:.1f}" stroke="#ef4444" stroke-width="3"/>')
-        elif outcome == "kept":
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5.5" fill="#10b981" stroke="#047857" stroke-width="1.3"/>')
-        elif outcome == "baseline":
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5.5" fill="#6366f1" stroke="#4338ca" stroke-width="1.3"/>')
-        else:
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="#cbd5e1" opacity="0.9"/>')
-
-    best = _dict_value(run_summary.get("best"))
-    if best.get("display_value") is not None:
-        best_x = x_scale(int(best.get("experiment_index") or points[-1]["experiment_index"]))
-        best_y = y_scale(float(best["display_value"]))
-        label_text = f'{_format_number(float(best["display_value"]))}{unit}'
-        parts.append(
-            f'<rect x="{best_x+10:.1f}" y="{best_y-24:.1f}" width="126" height="34" rx="6" fill="#ecfdf5" stroke="#10b981"/>'
+    dots = []
+    for item, value in points:
+        index = int(item["experiment_index"])
+        x, y = x_scale(index), y_scale(value)
+        outcome = item["outcome_key"]
+        kept = item.get("accepted") and outcome in {"kept", "baseline"}
+        if kept and _is_better(value, best, metric["direction"]):
+            best = value
+        if best is not None:
+            best_points.append(f"{x:.1f},{y_scale(best):.1f}")
+        color = {"baseline": "#4f46e5", "kept": "#087e72"}.get(outcome, "#b45309")
+        if outcome in FAILURE_OUTCOMES:
+            color = "#b91c1c"
+        tooltip = f"{item['branch_id']} · {_outcome_label(outcome)} · {_format_metric_value(value, metric)}"
+        dots.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="{color}">'
+            f'<title>{escape(tooltip)}</title></circle>'
         )
-        parts.append(
-            f'<text x="{best_x+18:.1f}" y="{best_y-3:.1f}" font-size="14" font-weight="700" fill="#047857">{escape(label_text)}</text>'
-        )
-
-    legend_x = width - margin_right - 224
-    legend_y = height - margin_bottom - 88
-    parts.extend(
-        [
-            f'<rect x="{legend_x}" y="{legend_y}" width="218" height="78" rx="6" fill="#ffffff" stroke="#dbe3ef" opacity="0.94"/>',
-            f'<circle cx="{legend_x+18}" cy="{legend_y+18}" r="5" fill="#10b981"/><text x="{legend_x+32}" y="{legend_y+23}" class="small">变更被采纳</text>',
-            f'<circle cx="{legend_x+18}" cy="{legend_y+40}" r="4" fill="#cbd5e1"/><text x="{legend_x+32}" y="{legend_y+45}" class="small">变更被回退 / 无收益</text>',
-            f'<line x1="{legend_x+13}" y1="{legend_y+57}" x2="{legend_x+23}" y2="{legend_y+67}" stroke="#ef4444" stroke-width="3"/><line x1="{legend_x+23}" y1="{legend_y+57}" x2="{legend_x+13}" y2="{legend_y+67}" stroke="#ef4444" stroke-width="3"/><text x="{legend_x+32}" y="{legend_y+66}" class="small">失败 / 超时</text>',
-        ]
-    )
-    parts.append("</svg>")
-    return "\n".join(parts)
+    if best_points:
+        parts.append(f'<polyline points="{" ".join(best_points)}" class="best"/>')
+    return "\n".join([*parts, *dots, "</svg>"])
 
 
 def render_dashboard_html(view: dict[str, Any], *, iteration_effect_name: str) -> str:
     summary = view["run_summary"]
-    branches = view["branches"]
-    attempts = view["attempts"]
-    families = _family_cards(branches)
-    cards = [
-        ("实验次数", summary["counts"].get("实验次数", 0)),
-        ("变更被采纳", summary["counts"].get("变更被采纳", 0)),
-        ("变更被回退", summary["counts"].get("变更被回退", 0)),
-        ("失败次数", summary["counts"].get("失败次数", 0)),
-        (_dict_value(summary.get("display_metric")).get("label", "当前最好"), _best_display(summary)),
-        ("推理成本", _cost_display(summary)),
-    ]
-    family_rows = "\n".join(
-        "<tr>"
-        f"<td>{escape(item['family'])}</td>"
-        f"<td>{item['attempts']}</td>"
-        f"<td>{item['kept']}</td>"
-        f"<td>{item['failed']}</td>"
-        f"<td>{_format_number(item['best_delta'])}</td>"
-        "</tr>"
-        for item in families
-    )
-    attempt_rows = "\n".join(
-        "<tr>"
-        f"<td>{item.get('experiment_index')}</td>"
-        f"<td>{escape(str(item.get('branch_id') or ''))}</td>"
-        f"<td>{escape(str(item.get('family') or ''))}</td>"
-        f"<td>{escape(str(item.get('outcome') or ''))}</td>"
-        f"<td>{escape(_format_number(item.get('display_value')))}</td>"
-        f"<td>{escape(str(item.get('summary') or ''))}</td>"
-        "</tr>"
-        for item in attempts[-18:]
-    )
-    card_html = "\n".join(
-        f'<section class="card"><div class="label">{escape(str(label))}</div><div class="value">{escape(str(value))}</div></section>'
-        for label, value in cards
-    )
     outcome = summary.get("outcome") or {}
-    outcome_html = ""
-    if outcome:
-        outcome_html = '<section class="panel" aria-label="运行结果">' + "".join(
-            f'<{tag} style="white-space:pre-wrap;overflow-wrap:anywhere">{escape(str(outcome.get(key) or ""))}</{tag}>'
-            for key, tag in (("title", "h2"), ("detail", "p"), ("reason", "p"), ("next_step", "p"))
-            if outcome.get(key)
-        ) + "</section>"
+    title = escape(str(summary["title"]))
+    cards = "\n".join(
+        f'<div class="card"><dt>{escape(label)}</dt><dd>{escape(value)}</dd></div>'
+        for label, value in result_rows(summary["result"])
+    )
+    outcome_html = "".join(
+        f'<{tag}>{escape(outcome[key])}</{tag}>'
+        for key, tag in (("title", "h2"), ("detail", "p"), ("reason", "p"))
+        if outcome.get(key)
+    )
+    next_step = f'<p class="next-step">{escape(outcome["next_step"])}</p>' if outcome.get("next_step") else ""
+    details = ""
+    if view["branches"] or any(item["local_iteration"] for item in view["attempts"]):
+        counts = escape(format_counts(summary["search_counts"]))
+        branch_rows = "\n".join(
+            "<tr>"
+            f"<td>{escape(branch['branch_id'])}</td><td>{escape(branch['parent_id'] or '—')}</td>"
+            f"<td>{branch['round']}</td><td>{escape(branch['variant'] or branch['family'])}</td>"
+            f"<td>{escape(branch['status'].title())}</td>"
+            f"<td>{escape(_outcome_label(branch['outcome']))}</td>"
+            "</tr>"
+            for branch in view["branches"]
+        )
+        attempt_rows = "\n".join(
+            "<tr>"
+            f"<td>{item['experiment_index']}</td><td>{escape(item['branch_id'])}</td>"
+            f"<td>{escape(item['outcome'])}</td>"
+            f"<td>{'—' if item.get('display_imputed') else _format_number(item['display_value'])}</td>"
+            f"<td>{escape(item['summary'])}</td>"
+            "</tr>"
+            for item in view["attempts"][-18:]
+        )
+        metric = escape(str(summary["display_metric"]["label"]))
+        details = f"""<details id="branch-details" class="panel">
+    <summary>Branch details</summary>
+    <p class="muted">{counts}</p>
+    <h3>Iteration map</h3>
+    <p class="legend">
+      <span class="baseline">● Baseline</span>
+      <span class="kept">● Kept</span>
+      <span class="reverted">● Reverted</span>
+      <span class="failed">● Failed</span>
+      <span class="kept">━ Best kept measurement</span>
+    </p>
+    <div class="scroll"><img class="chart" src="{escape(iteration_effect_name)}" alt="Search measurements by attempt"></div>
+    <h3>Branches</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Branch</th><th>Parent</th><th>Round</th><th>Candidate</th><th>Status</th><th>Last attempt</th></tr></thead>
+      <tbody>{branch_rows}</tbody>
+    </table></div>
+    <h3>Recent attempts</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Attempt</th><th>Branch</th><th>Outcome</th><th>{metric}</th><th>Evidence summary</th></tr></thead>
+      <tbody>{attempt_rows}</tbody>
+    </table></div>
+  </details>"""
+
     return f"""<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape(str(summary.get("title", "Run Dashboard")))}</title>
+  <title>{title}</title>
   <style>
-    :root {{ color-scheme: light; --ink:#172033; --muted:#64748b; --line:#dbe3ef; --panel:#ffffff; --bg:#f6f8fb; }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
-    main {{ max-width:1500px; margin:0 auto; padding:28px 28px 40px; }}
-    header {{ display:flex; justify-content:space-between; gap:24px; align-items:flex-end; margin-bottom:18px; }}
-    h1 {{ margin:0; font-size:28px; letter-spacing:0; }}
-    .sub {{ color:var(--muted); margin-top:8px; font-size:15px; }}
-    .cards {{ display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:12px; margin:18px 0; }}
-    .card {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; min-height:86px; }}
-    .label {{ color:var(--muted); font-size:13px; margin-bottom:10px; }}
-    .value {{ font-size:24px; font-weight:700; white-space:nowrap; }}
-    .panel {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; margin-top:14px; }}
-    .panel h2 {{ margin:0 0 12px; font-size:18px; }}
-    .chart {{ width:100%; overflow:auto; }}
-    .chart img {{ width:100%; min-width:980px; display:block; }}
+    :root {{ color-scheme:light; --ink:#172033; --muted:#475569; --line:#dbe3ef; --bg:#f6f8fb; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,sans-serif; }}
+    main {{ max-width:1160px; margin:auto; padding:40px 24px; }}
+    h1 {{ margin:0 0 16px; font-size:clamp(24px, 4vw, 34px); }}
+    h2 {{ margin:0 0 8px; font-size:20px; }}
+    h3 {{ margin:22px 0 8px; font-size:16px; }}
+    p {{ margin:0 0 12px; overflow-wrap:anywhere; }}
+    .muted, dt {{ color:var(--muted); }}
+    .panel {{ background:white; border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:14px; }}
+    .result {{ border-top:3px solid #087e72; }}
+    .cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(138px,1fr)); gap:10px; margin:14px 0 0; }}
+    .card {{ background:var(--bg); border-radius:8px; padding:12px; }}
+    dt {{ font-size:13px; }}
+    dd {{ margin:3px 0 0; font-size:19px; font-weight:650; font-variant-numeric:tabular-nums; }}
+    .next-step {{ margin:16px 0 0; color:var(--muted); white-space:pre-wrap; }}
+    summary {{ cursor:pointer; font-weight:650; }}
+    details > p {{ margin-top:10px; }}
+    .legend {{ display:flex; gap:8px 20px; flex-wrap:wrap; font-size:13px; }}
+    .baseline {{ color:#4f46e5; }} .kept {{ color:#087e72; }}
+    .reverted {{ color:#92400e; }} .failed {{ color:#b91c1c; }}
+    .scroll {{ overflow-x:auto; }}
+    .chart {{ display:block; width:100%; min-width:620px; }}
     table {{ width:100%; border-collapse:collapse; font-size:14px; }}
-    th, td {{ padding:10px 8px; border-bottom:1px solid #edf1f7; text-align:left; vertical-align:top; }}
-    th {{ color:var(--muted); font-weight:600; }}
-    .grid {{ display:grid; grid-template-columns:1fr 1.4fr; gap:14px; }}
-    @media (max-width: 1100px) {{ .cards {{ grid-template-columns:repeat(2, 1fr); }} .grid {{ grid-template-columns:1fr; }} }}
+    th, td {{ padding:8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }}
+    th {{ color:var(--muted); }}
   </style>
 </head>
 <body>
 <main>
-  <header>
-    <div>
-      <h1>{escape(str(summary.get("title", "Run Dashboard")))}</h1>
-      <div class="sub">{escape(_summary_line(summary))}</div>
-    </div>
-  </header>
-  {outcome_html}
-  <p class="sub">{escape(format_counts(summary["search_counts"]))}</p>
-  <div class="cards">{card_html}</div>
-  <section class="panel">
-    <h2>迭代效果</h2>
-    <div class="chart"><img src="{escape(iteration_effect_name)}" alt="iteration effect chart"></div>
+  <h1>{title}</h1>
+  <section class="panel result" aria-label="Run result">
+    {outcome_html}
+    <dl class="cards">{cards}</dl>
+    {next_step}
   </section>
-  <div class="grid">
-    <section class="panel">
-      <h2>优化方向效果</h2>
-      <table><thead><tr><th>方向</th><th>尝试</th><th>采纳</th><th>失败</th><th>最好改善</th></tr></thead><tbody>{family_rows}</tbody></table>
-    </section>
-    <section class="panel">
-      <h2>最近实验</h2>
-      <table><thead><tr><th>#</th><th>节点</th><th>方向</th><th>结果</th><th>指标</th><th>摘要</th></tr></thead><tbody>{attempt_rows}</tbody></table>
-    </section>
-  </div>
+  {details}
 </main>
 </body>
 </html>
@@ -403,33 +395,18 @@ def render_dashboard_html(view: dict[str, Any], *, iteration_effect_name: str) -
 
 def render_summary_markdown(view: dict[str, Any]) -> str:
     summary = view["run_summary"]
-    timeline = view["human_timeline"][:8]
-    lines = [
-        f"# {summary.get('title', 'Run Dashboard')}",
-        "",
-        _summary_line(summary),
-        "",
-        format_counts(summary["search_counts"]),
-        "",
-        "## 关键结果",
-        "",
-        f"- 实验次数：{summary['counts'].get('实验次数', 0)}",
-        f"- 变更被采纳：{summary['counts'].get('变更被采纳', 0)}",
-        f"- 变更被回退：{summary['counts'].get('变更被回退', 0)}",
-        f"- 失败次数：{summary['counts'].get('失败次数', 0)}",
-        f"- 当前最好：{_best_display(summary)}",
-        f"- 成本：{_cost_display(summary)}",
-        "",
-        "## 时间线",
-        "",
-    ]
     outcome = summary.get("outcome") or {}
-    if outcome:
-        lines[2:2] = [str(outcome[key]) for key in ("title", "detail", "reason", "next_step") if outcome.get(key)] + [""]
-    for item in timeline:
-        lines.append(f"- {item['title']}：{item['summary']}")
-    lines.append("")
-    return "\n".join(lines)
+    lines = [f"# {summary['title']}", ""]
+    for key in ("title", "detail", "reason"):
+        if outcome.get(key):
+            lines.extend([outcome[key], ""])
+    lines.extend(["## Final verification and usage", ""])
+    lines.extend(f"- **{label}** {value}" for label, value in result_rows(summary["result"]))
+    if outcome.get("next_step"):
+        lines.extend(["", outcome["next_step"]])
+    if view["branches"] or any(item["local_iteration"] for item in view["attempts"]):
+        lines.extend(["", "[Branch details and iteration map](dashboard.html#branch-details)"])
+    return "\n".join(lines) + "\n"
 
 
 def _build_attempts(
@@ -461,7 +438,7 @@ def _build_attempts(
                 event_timestamp=str(event.get("timestamp") or ""),
             )
             attempt["outcome_key"] = "baseline"
-            attempt["outcome"] = "基线"
+            attempt["outcome"] = _outcome_label("baseline")
             attempts.append(attempt)
             seen.add((node_id, 0))
             continue
@@ -489,6 +466,9 @@ def _build_attempts(
                 fallback_accepted=payload.get("accepted"),
                 fallback_summary=payload.get("summary"),
                 event_timestamp=str(event.get("timestamp") or ""),
+                # Earlier local-loop events did not store individual measurements.
+                event_metrics=_dict_value(payload.get("metrics")) if "local_iteration" in payload else None,
+                event_kept=payload.get("kept"),
             )
         )
 
@@ -520,8 +500,10 @@ def _build_attempts(
     best_display = None
     direction = str(display_metric.get("direction") or "higher")
     for attempt in sorted(attempts, key=lambda item: int(item.get("experiment_index", 0))):
+        kept = attempt.pop("event_kept")
         if attempt["outcome_key"] == "baseline":
-            best_display = attempt.get("display_value")
+            if attempt["accepted"]:
+                best_display = attempt.get("display_value")
             attempt["best_so_far"] = best_display
             continue
         node = _dict_value(nodes.get(str(attempt.get("branch_id"))))
@@ -539,23 +521,17 @@ def _build_attempts(
             attempt["outcome"] = "Proposed"
             continue
         if status == "failed" and not attempt.get("evaluated"):
-            attempt["outcome_key"] = "failed"
-            attempt["outcome"] = "失败"
+            outcome = "failed"
         elif not accepted:
-            attempt["outcome_key"] = _failure_outcome(attempt, node)
-            attempt["outcome"] = _outcome_label(attempt["outcome_key"])
-        elif parent_score is not None and score is not None and score > parent_score:
-            attempt["outcome_key"] = "kept"
-            attempt["outcome"] = "变更被采纳"
+            outcome = _failure_outcome(attempt, node)
         else:
-            attempt["outcome_key"] = "reverted"
-            attempt["outcome"] = "变更被回退"
+            if kept is None:
+                kept = parent_score is not None and score is not None and score > parent_score
+            outcome = "kept" if kept else "reverted"
+        attempt["outcome_key"] = outcome
+        attempt["outcome"] = _outcome_label(outcome)
         display_value = _number(attempt.get("display_value"))
-        if display_value is None and best_display is not None:
-            display_value = float(best_display)
-            attempt["display_value"] = display_value
-            attempt["display_imputed"] = True
-        if accepted and display_value is not None and _is_better(display_value, best_display, direction):
+        if outcome == "kept" and display_value is not None and _is_better(display_value, best_display, direction):
             best_display = display_value
             attempt["refreshes_best"] = True
         attempt["best_so_far"] = best_display
@@ -575,10 +551,12 @@ def _attempt_from_node(
     fallback_accepted: Any,
     fallback_summary: Any,
     event_timestamp: str,
+    event_metrics: dict | None = None,
+    event_kept: bool | None = None,
 ) -> dict[str, Any]:
     hypothesis = _dict_value(node.get("hypothesis"))
     evaluation = _dict_value(node.get("evaluation_result"))
-    metrics = _dict_value(evaluation.get("metrics"))
+    metrics = _dict_value(evaluation.get("metrics")) if event_metrics is None else event_metrics
     score = _number(fallback_score if fallback_score is not None else evaluation.get("score"))
     accepted = fallback_accepted if fallback_accepted is not None else evaluation.get("accepted")
     execution = _dict_value(node.get("execution_result"))
@@ -604,6 +582,7 @@ def _attempt_from_node(
         "target": hypothesis.get("target") or "",
         "accepted": bool(accepted),
         "evaluated": bool(evaluation) or fallback_accepted is not None,
+        "event_kept": event_kept,
         "score": score,
         "display_metric": display_metric,
         "display_value": display_value,
@@ -615,7 +594,7 @@ def _attempt_from_node(
         "error": node.get("error") or "",
         "timestamp": event_timestamp,
         "outcome_key": "reverted",
-        "outcome": "变更被回退",
+        "outcome": _outcome_label("reverted"),
         "refreshes_best": False,
         "evidence_paths": list(_dict_value(evaluation.get("raw_log_paths")).values()),
     }
@@ -675,11 +654,7 @@ def _build_run_summary(
 ) -> dict[str, Any]:
     non_baseline = [item for item in attempts if item.get("outcome_key") not in {"baseline", "skipped_budget", "pending"}]
     kept = [item for item in non_baseline if item.get("outcome_key") == "kept"]
-    failed = [
-        item
-        for item in non_baseline
-        if item.get("outcome_key") in {"failed", "timeout", "rejected_compile", "rejected_runtime", "rejected_correctness"}
-    ]
+    failed = [item for item in non_baseline if item.get("outcome_key") in FAILURE_OUTCOMES]
     reverted = [item for item in non_baseline if item not in kept and item not in failed]
     baseline = next((item for item in attempts if item.get("outcome_key") == "baseline"), None)
     memory = _dict_value(state.get("root_memory"))
@@ -746,7 +721,7 @@ def _build_human_timeline(
     timeline = [
         {
             "kind": "run_summary",
-            "title": "运行总览",
+            "title": "Search overview",
             "summary": _summary_line(run_summary),
             "severity": "info",
         }
@@ -754,13 +729,13 @@ def _build_human_timeline(
     for item in attempts:
         if item.get("outcome_key") == "baseline":
             continue
-        title = f"第 {item.get('experiment_index')} 次实验：{item.get('variant') or item.get('family')}"
+        title = f"Attempt {item.get('experiment_index')} · {item.get('variant') or item.get('family')}"
         display = _format_metric_value(item.get("display_value"), _dict_value(item.get("display_metric")))
         timeline.append(
             {
                 "kind": "attempt_result",
                 "title": title,
-                "summary": f"{item.get('outcome')}；{_dict_value(item.get('display_metric')).get('label', '指标')} {display}。",
+                "summary": f"{item.get('outcome')} · {_dict_value(item.get('display_metric')).get('label', 'Metric')} {display}",
                 "severity": "success" if item.get("outcome_key") == "kept" else "error" if item.get("outcome_key") in {"failed", "timeout"} else "warning",
                 "branch_id": item.get("branch_id"),
                 "experiment_index": item.get("experiment_index"),
@@ -779,8 +754,7 @@ def _collect_metric_keys(nodes: dict[str, Any], events: list[dict[str, Any]]) ->
             keys.add("score")
     for event in events:
         payload = _dict_value(event.get("payload"))
-        if payload.get("score") is not None:
-            keys.add("score")
+        keys.update(_dict_value(payload.get("metrics")))
     return {str(key) for key in keys if key}
 
 
@@ -824,12 +798,17 @@ def _metrics_catalog(
 
 def _failure_outcome(attempt: dict[str, Any], node: dict[str, Any]) -> str:
     text = " ".join(str(value or "") for value in [attempt.get("summary"), attempt.get("error"), node.get("error")]).lower()
-    correctness = str(_dict_value(attempt.get("metrics")).get("correctness", "")).upper()
+    metrics = _dict_value(attempt.get("metrics"))
+    correctness = str(metrics.get("correctness", "")).upper()
+    failure = str(metrics.get("verification_failure_reason") or "")
     if "timeout" in text or "timed out" in text:
         return "timeout"
     if "compile" in text and ("fail" in text or "error" in text):
         return "rejected_compile"
-    if correctness and correctness != "PASS":
+    if failure in {"candidate_failed", "reference_failed"}:
+        return "rejected_runtime"
+    if ((correctness and correctness != "PASS")
+            or failure.startswith(("correctness_", "numerical_")) or failure == "invalid_error_metric"):
         return "rejected_correctness"
     if node.get("status") == "failed":
         return "failed"
@@ -838,50 +817,17 @@ def _failure_outcome(attempt: dict[str, Any], node: dict[str, Any]) -> str:
 
 def _outcome_label(key: str) -> str:
     return {
-        "baseline": "基线",
-        "kept": "变更被采纳",
-        "reverted": "变更被回退",
-        "failed": "失败",
-        "timeout": "超时",
-        "rejected_compile": "编译失败",
-        "rejected_runtime": "运行失败",
-        "rejected_correctness": "正确性失败",
+        "baseline": "Baseline",
+        "kept": "Kept",
+        "reverted": "Reverted",
+        "failed": "Failed",
+        "timeout": "Timed out",
+        "rejected_compile": "Compilation failed",
+        "rejected_runtime": "Execution failed",
+        "rejected_correctness": "Correctness failed",
+        "skipped_budget": "Skipped by budget",
+        "pending": "Proposed",
     }.get(key, key)
-
-
-def _family_segments(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not points:
-        return []
-    segments = []
-    current = str(points[0].get("family") or "unspecified")
-    start = int(points[0]["experiment_index"])
-    end = start
-    for item in points[1:]:
-        family = str(item.get("family") or "unspecified")
-        index = int(item["experiment_index"])
-        if family != current:
-            segments.append({"family": current, "start": start, "end": end})
-            current = family
-            start = index
-        end = index
-    segments.append({"family": current, "start": start, "end": end})
-    return segments
-
-
-def _family_cards(branches: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: dict[str, dict[str, Any]] = {}
-    for branch in branches:
-        family = str(branch.get("family") or "unspecified")
-        row = rows.setdefault(family, {"family": family, "attempts": 0, "kept": 0, "failed": 0, "best_delta": 0.0})
-        row["attempts"] += int(branch.get("attempt_count") or 0)
-        if str(branch.get("outcome")) in {"accepted_improved", "kept"}:
-            row["kept"] += 1
-        if str(branch.get("status")) == "failed":
-            row["failed"] += 1
-        score = _number(branch.get("final_score"))
-        if score is not None:
-            row["best_delta"] = max(float(row["best_delta"]), score)
-    return sorted(rows.values(), key=lambda item: (-int(item["kept"]), -int(item["attempts"]), item["family"]))
 
 
 def _dashboard_title(task: dict[str, Any]) -> str:
@@ -890,8 +836,8 @@ def _dashboard_title(task: dict[str, Any]) -> str:
         return "AutoKernel: Autonomous GPU Kernel Optimization"
     if task_type == "kernelbench":
         return "KernelBench Optimization Run"
-    if task_type == "pipeline":
-        return "Pipeline Optimization Run"
+    if task_type in {"pipeline", "Run"}:
+        return "AutoPipeline run report"
     return f"{task_type.title()} Optimization Run"
 
 
@@ -900,36 +846,19 @@ def _summary_line(run_summary: dict[str, Any]) -> str:
     baseline = _dict_value(run_summary.get("baseline"))
     best = _dict_value(run_summary.get("best"))
     display_metric = _dict_value(run_summary.get("display_metric"))
-    unit = str(display_metric.get("unit") or "")
-    label = str(display_metric.get("label") or "指标")
-    base = _format_number(baseline.get("display_value"))
-    final = _format_number(best.get("display_value"))
+    label = str(display_metric.get("label") or "Metric")
+    base = _format_metric_value(baseline.get("display_value"), display_metric)
+    final = _format_metric_value(best.get("display_value"), display_metric)
     return (
-        f"{counts.get('实验次数', 0)} 次实验 | "
-        f"{counts.get('变更被采纳', 0)} 次变更被采纳 | "
-        f"{counts.get('变更被回退', 0)} 次变更被回退 | "
-        f"{counts.get('失败次数', 0)} 次失败 | "
-        f"{label} {base} -> {final}{unit}"
+        f"{counts.get('实验次数', 0)} attempts · {counts.get('变更被采纳', 0)} kept · "
+        f"{counts.get('变更被回退', 0)} reverted · {counts.get('失败次数', 0)} failed · "
+        f"{label} {base} → {final}"
     )
-
-
-def _best_display(summary: dict[str, Any]) -> str:
-    display = _dict_value(summary.get("display_metric"))
-    value = _dict_value(summary.get("best")).get("display_value")
-    return _format_metric_value(value, display)
-
-
-def _cost_display(summary: dict[str, Any]) -> str:
-    cost = _dict_value(summary.get("cost"))
-    api_calls = cost.get("API 调用量", 0)
-    tokens = cost.get("令牌使用量", 0)
-    money = cost.get("推理成本", 0)
-    return f"{api_calls} API | {_compact_int(tokens)} tokens | ${_format_number(money)}"
 
 
 def _format_metric_value(value: Any, metric: dict[str, Any]) -> str:
     unit = str(metric.get("unit") or "")
-    return f"{_format_number(value)}{unit}"
+    return f"{_format_number(value)} {unit}".strip() if value is not None else "Unavailable"
 
 
 def _format_number(value: Any) -> str:
@@ -943,17 +872,6 @@ def _format_number(value: Any) -> str:
     return f"{number:.3f}".rstrip("0").rstrip(".")
 
 
-def _compact_int(value: Any) -> str:
-    number = _number(value)
-    if number is None:
-        return "0"
-    if number >= 1_000_000:
-        return f"{number/1_000_000:.1f}M"
-    if number >= 1_000:
-        return f"{number/1_000:.1f}k"
-    return str(int(number))
-
-
 def _is_better(value: float | int | None, current: float | int | None, direction: str) -> bool:
     if value is None:
         return False
@@ -964,9 +882,9 @@ def _is_better(value: float | int | None, current: float | int | None, direction
 
 def _branch_summary(node_id: str, hypothesis: dict[str, Any], final_attempt: dict[str, Any]) -> str:
     title = hypothesis.get("title") or hypothesis.get("id") or node_id
-    outcome = final_attempt.get("outcome") or "未评测"
+    outcome = final_attempt.get("outcome") or "Awaiting evaluation"
     value = _format_metric_value(final_attempt.get("display_value"), _dict_value(final_attempt.get("display_metric")))
-    return f"{title}: {outcome}，指标 {value}"
+    return f"{title} · {outcome} · {value}"
 
 
 def _empty_svg(width: int, height: int, message: str) -> str:
@@ -986,9 +904,10 @@ def _number(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

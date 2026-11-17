@@ -71,7 +71,7 @@ class UserWorkflowTests(unittest.TestCase):
                 self.assertNotIn("<script>alert", html)
                 markdown = (run / "view/summary.md").read_text()
                 self.assertIn(outcome({"status": status})["title"], markdown)
-                self.assertNotIn("导出并复验", output)
+                self.assertNotIn("pipeline export", output)
                 self.assertFalse((run / "search_state.json").exists())
 
     def test_success_without_verification_is_not_presented_as_usable(self):
@@ -80,8 +80,8 @@ class UserWorkflowTests(unittest.TestCase):
             (run / "result.json").write_text(json.dumps({"status": "completed_improved", "verified": False}))
             code, output, _ = self.invoke("report", str(run))
             self.assertEqual(code, 0)
-            self.assertIn("结果未确认", output)
-            self.assertNotIn("导出并复验", output)
+            self.assertIn("Outcome unconfirmed", output)
+            self.assertNotIn("pipeline export", output)
 
 
 if __name__ == "__main__":

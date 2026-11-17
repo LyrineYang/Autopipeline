@@ -6,8 +6,7 @@ import json
 from pathlib import Path
 import sys
 
-from autopipeline.search.run_artifacts import format_counts
-from autopipeline.search.viewer import write_run_view
+from autopipeline.search.viewer import result_rows, write_run_view
 from .presentation import load_receipt, outcome, print_outcome, next_steps
 
 
@@ -48,7 +47,8 @@ def main(argv: list[str] | None = None) -> int:
             print_outcome(receipt)
         else:
             print(summary["title"])
-        print(format_counts(summary["search_counts"]))
+        for label, value in result_rows(summary["result"]):
+            print(f"{label}: {value}")
         print(f"Dashboard: {paths.dashboard}")
         print(f"Summary: {paths.summary_markdown}")
         if receipt is not None:

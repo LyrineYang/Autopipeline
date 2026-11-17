@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Lead the English run report with final correctness, paired latency, run time, and agent usage.
+  Show the iteration map and search history in Branch details.
+- Skip evaluator bytecode caches and reference the original verifier report from trial metadata.
+
 ## 1.4.0a7
 
 - Narrow the task protocol to the required lifecycle. Native Python and theoretical-limit probes

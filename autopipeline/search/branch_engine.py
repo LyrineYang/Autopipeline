@@ -152,14 +152,20 @@ class BranchEngine:
             evaluation_result = self._evaluate_node(node, iteration=iteration)
             last_evaluation = evaluation_result
             last_execution = execution_result
+            kept = evaluation_result.accepted and evaluation_result.ranking_score > branch_best_score
             self.log_event(
                 "evaluation_completed",
                 {
                     "node_id": node.id,
                     "local_iteration": iteration,
                     "accepted": evaluation_result.accepted,
+                    "kept": kept,
                     "score": evaluation_result.ranking_score,
                     "summary": evaluation_result.summary,
+                    "metrics": {
+                        key: value for key, value in evaluation_result.metrics.items()
+                        if key in {"correctness", "verification_failure_reason"} or isinstance(value, (int, float))
+                    },
                 },
             )
             local_history.append(
@@ -173,7 +179,7 @@ class BranchEngine:
                 }
             )
 
-            if evaluation_result.accepted and evaluation_result.ranking_score > branch_best_score:
+            if kept:
                 checkpoint_candidate(self.task, node, best_candidate_path)
                 branch_best_score = evaluation_result.ranking_score
                 best_evaluation = evaluation_result

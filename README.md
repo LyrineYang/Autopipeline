@@ -49,8 +49,8 @@ autopipeline pipeline evaluate --spec workspace/demo/pipeline.json --run-dir wor
 autopipeline report workspace/demo/runs/baseline
 ```
 
-Open `workspace/demo/runs/baseline/view/dashboard.html` for the verification result, measured
-latency, and profile. The initial candidate uses the reference implementation, so the first
+Open `workspace/demo/runs/baseline/view/dashboard.html` for final correctness, paired latency,
+run time, and agent usage. The initial candidate uses the reference implementation, so the first
 evaluation gives you a baseline.
 
 ## Run a Tree Search
@@ -67,8 +67,8 @@ autopipeline report workspace/demo/runs/search
 ```
 
 If two first-round candidates pass, both can be tried before either gets a second child.
-The example uses at most four agent calls. Search uses your configured service quota. The report
-shows the selected candidate and whether it passed the final check.
+The example uses at most four agent calls. Search uses your configured service quota. Open
+**Branch details** in the report for the iteration map, parent branches, and recent attempts.
 
 ## Bring Your Own Workload
 

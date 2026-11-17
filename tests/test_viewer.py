@@ -167,7 +167,59 @@ class ViewerTests(unittest.TestCase):
             self.assertTrue(paths.iteration_effect.exists())
             self.assertTrue(paths.attempts.exists())
             self.assertIn("AutoKernel", paths.dashboard.read_text(encoding="utf-8"))
+            self.assertIn('<details id="branch-details"', paths.dashboard.read_text(encoding="utf-8"))
             self.assertIn("<svg", paths.iteration_effect.read_text(encoding="utf-8"))
+
+    def test_legacy_receipt_reports_final_measurements_with_missing_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "result.json").write_text(json.dumps({
+                "status": "verified",
+                "verified": True,
+                "final_verification": {
+                    "accepted": True,
+                    "metrics": {"end_to_end_ms": 7.25, "measurement_scope": "model forward"},
+                    "verification": {
+                        "correctness": {"passed": True},
+                        "performance": {"reference_end_to_end_ms": 9.5, "candidate_end_to_end_ms": 7.25},
+                    },
+                },
+            }))
+            paths = write_run_view(run)
+            summary = paths.summary_markdown.read_text()
+            self.assertIn("**Final correctness** Passed", summary)
+            self.assertIn("**Reference forward latency** 9.5 ms", summary)
+            self.assertIn("**Candidate forward latency** 7.25 ms", summary)
+            self.assertIn("**Run time** Unavailable", summary)
+            self.assertIn("**Agent calls** Unavailable", summary)
+
+    def test_iteration_map_records_local_attempts_before_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "search_state.json").write_text(json.dumps({
+                "nodes": {"node-0002": {
+                    "parent_id": "node-0001",
+                    "status": "completed",
+                    "evaluation_result": {"accepted": True, "score": 2, "metrics": {"forward_latency_ms": 6}},
+                }},
+            }))
+            trials = [(6, True, True), (8, True, False), (1, False, False)]
+            events = [
+                {"event": "evaluation_completed", "payload": {
+                    "node_id": "node-0002", "local_iteration": iteration, "accepted": accepted,
+                    "kept": kept, "metrics": {
+                        "forward_latency_ms": latency, "correctness": "PASS",
+                        "verification_failure_reason": None if accepted else "numerical_error_exceeded",
+                    },
+                }}
+                for iteration, (latency, accepted, kept) in enumerate(trials, start=1)
+            ]
+            (run / "tree_events.jsonl").write_text("\n".join(map(json.dumps, events)))
+            view = build_run_view(run)
+            self.assertEqual([item["display_value"] for item in view["attempts"]], [6, 8, 1])
+            self.assertEqual([item["best_so_far"] for item in view["attempts"]], [6, 6, 6])
+            self.assertEqual([item["outcome_key"] for item in view["attempts"]],
+                             ["kept", "reverted", "rejected_correctness"])
 
 
 if __name__ == "__main__":

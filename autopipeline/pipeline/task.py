@@ -29,6 +29,9 @@ from .planning import build_planner_context, seed_hypotheses
 from .spec import PipelineSpec
 
 
+_IGNORE_BYTECODE_CACHE = shutil.ignore_patterns("__pycache__")
+
+
 class PipelineTask(OptimizationTask):
     """Generic pipeline workspace task driven by a JSON spec."""
 
@@ -85,7 +88,7 @@ class PipelineTask(OptimizationTask):
         sandbox_dir = Path(node.node_dir) / "sandbox"
         if sandbox_dir.exists():
             shutil.rmtree(sandbox_dir)
-        shutil.copytree(source, sandbox_dir)
+        shutil.copytree(source, sandbox_dir, ignore=_IGNORE_BYTECODE_CACHE)
         node.sandbox_path = str(sandbox_dir)
         node.candidate_path = str(sandbox_dir / self.spec.target_path)
 
@@ -156,7 +159,7 @@ class PipelineTask(OptimizationTask):
         promoted_path = self.run_dir / "promoted_pipeline"
         if promoted_path.exists():
             shutil.rmtree(promoted_path)
-        shutil.copytree(Path(node.sandbox_path), promoted_path)
+        shutil.copytree(Path(node.sandbox_path), promoted_path, ignore=_IGNORE_BYTECODE_CACHE)
         self._last_promoted_path = promoted_path
         return str(promoted_path)
 
@@ -301,13 +304,13 @@ class PipelineTask(OptimizationTask):
                 shutil.rmtree(checkpoint_path)
             else:
                 checkpoint_path.unlink()
-        shutil.copytree(Path(node.sandbox_path), checkpoint_path)
+        shutil.copytree(Path(node.sandbox_path), checkpoint_path, ignore=_IGNORE_BYTECODE_CACHE)
 
     def restore_candidate(self, node: SearchNode, checkpoint_path: Path) -> None:
         sandbox_path = Path(node.sandbox_path)
         if sandbox_path.exists():
             shutil.rmtree(sandbox_path)
-        shutil.copytree(checkpoint_path, sandbox_path)
+        shutil.copytree(checkpoint_path, sandbox_path, ignore=_IGNORE_BYTECODE_CACHE)
         node.candidate_path = str(sandbox_path / self.spec.target_path)
 
     def _resolve_command(
@@ -334,6 +337,7 @@ class PipelineTask(OptimizationTask):
     ) -> dict[str, str]:
         return {
             **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(autopipeline.__file__).resolve().parent.parent), os.environ.get("PYTHONPATH", "")])),
             "PIPELINE_WORKSPACE": str(sandbox),
             "PIPELINE_NODE_DIR": str(node_dir),
@@ -357,7 +361,7 @@ class PipelineTask(OptimizationTask):
         reference_workspace = artifact_dir / "reference_workspace"
         if reference_workspace.exists():
             shutil.rmtree(reference_workspace)
-        shutil.copytree(self.spec.workspace_source, reference_workspace)
+        shutil.copytree(self.spec.workspace_source, reference_workspace, ignore=_IGNORE_BYTECODE_CACHE)
         return reference_workspace
 
     def _publish_evaluation_artifacts(
@@ -368,15 +372,12 @@ class PipelineTask(OptimizationTask):
     ) -> None:
         if self.run_dir is None:
             return
-        report_path = Path(str(report.get("artifact_paths", {}).get("report", "")))
         target_dir = (
             self.run_dir / "baseline"
             if node.hypothesis.id == "baseline" or node.parent_id is None
             else self.run_dir / "trials" / node.id
         )
         target_dir.mkdir(parents=True, exist_ok=True)
-        if report_path.exists():
-            shutil.copy2(report_path, target_dir / "verification_report.json")
         _write_json(target_dir / "metrics.json", metrics)
         compact = metrics.get("verification") if isinstance(metrics.get("verification"), dict) else {}
         _write_json(
@@ -387,7 +388,7 @@ class PipelineTask(OptimizationTask):
                 "hypothesis": asdict(node.hypothesis),
                 "bottleneck_region": compact.get("bottleneck_region", {}),
                 "candidate_modifications": compact.get("candidate_modifications", []),
-                "verification_report": str(target_dir / "verification_report.json"),
+                "verification_report": report["artifact_paths"]["report"],
                 "metrics": str(target_dir / "metrics.json"),
             },
         )

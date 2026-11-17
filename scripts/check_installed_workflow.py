@@ -55,12 +55,25 @@ def main():
     receipt = receipt_path(evaluated)
     baseline = json.loads(receipt.read_text())
     assert baseline["verified"] and baseline["status"] == "verified"
-    assert "不代表取得优化收益" in evaluated
+    assert "Evaluation passed" in evaluated
     metrics = json.loads((receipt.parent / "promoted_pipeline/metrics.json").read_text())
     assert metrics["correctness"] == "PASS" and metrics["compared_elements"] > 0
-    assert metrics["end_to_end_ms"] > 0 and metrics["profiler"]["status"] == "completed"
+    assert metrics["forward_latency_ms"] > 0 and metrics["profiler"]["status"] == "completed"
     report = run("report", receipt.parent)
-    assert "评估通过" in report
+    assert "Evaluation passed" in report and "Final correctness: Passed" in report
+    final_report = json.loads((receipt.parent / "final_verification/verification_report.json").read_text())
+    overview = json.loads((receipt.parent / "view/run_summary.json").read_text())["result"]
+    assert overview["correctness_passed"] is True
+    assert overview["reference_latency_ms"] == final_report["reference"]["metrics"]["forward_latency_ms"]
+    assert overview["candidate_latency_ms"] == final_report["candidate"]["metrics"]["forward_latency_ms"]
+    assert overview["duration_seconds"] == baseline["duration_seconds"] > 0
+    assert overview["agent_calls"] == overview["total_tokens"] == 0
+    dashboard = (receipt.parent / "view/dashboard.html").read_text()
+    assert '<html lang="en">' in dashboard and "Reference forward latency" in dashboard
+    assert not list(receipt.parent.rglob("__pycache__"))
+    assert not (receipt.parent / "baseline/verification_report.json").exists()
+    trial = json.loads((receipt.parent / "baseline/trial.json").read_text())
+    assert Path(trial["verification_report"]).is_file()
     exported = follow(report, "export")
     rechecked = follow(exported, "evaluate")
     assert json.loads(receipt_path(rechecked).read_text())["verified"]
@@ -73,10 +86,10 @@ def main():
         "from reference import Model\nclass ModelNew(Model):\n def forward(self, x):\n  return super().forward(x) + 100\n")
     failed = root / "wrong candidate"
     output = run("pipeline", "evaluate", "--spec", project / "pipeline.json", "--run-dir", failed, expected=1)
-    assert "运行失败" in output and "导出并复验" not in output
-    assert "候选诊断：" in output and "修正原项目的候选" in output
+    assert "Run failed" in output and "pipeline export" not in output
+    assert "Candidate diagnostics:" in output and "edit the candidate in the original project" in output
     assert not json.loads((failed / "result.json").read_text())["verified"]
-    assert "运行失败" in run("report", failed)
+    assert "Run failed" in run("report", failed)
     run("pipeline", "export", failed, "--output-dir", root / "invalid-export", expected=2)
     assert not (root / "invalid-export").exists()
     (root / "acceptance.json").write_text(json.dumps({"version": version, "import_path": module.origin,

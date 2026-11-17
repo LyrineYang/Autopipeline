@@ -147,7 +147,11 @@ class PipelineBridgeTests(unittest.TestCase):
             self.assertEqual(result.metrics["verification_verdict"], "reject")
             self.assertEqual(result.metrics["verification_failure_reason"], "numerical_error_exceeded")
             self.assertEqual(result.metrics["verification"]["numerical_error"]["max_abs_error"], 1.0)
-            self.assertTrue((run_dir / "trials" / "node-0002" / "verification_report.json").exists())
+            report_path = run_dir / "nodes" / node.id / "verification" / "verification_report.json"
+            self.assertTrue(report_path.is_file())
+            trial = json.loads((run_dir / "trials" / node.id / "trial.json").read_text())
+            self.assertEqual(Path(trial["verification_report"]), report_path)
+            self.assertFalse((run_dir / "trials" / node.id / "verification_report.json").exists())
 
     def test_pipeline_smoke_runs_agent_backed_tree_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,9 +221,15 @@ class PipelineBridgeTests(unittest.TestCase):
             self.assertNotEqual(first_trial_config, baseline_config)
             self.assertNotEqual(second_trial_config, baseline_config)
             self.assertNotEqual(first_trial_config, second_trial_config)
-            self.assertTrue((Path(result.run_dir) / "baseline" / "verification_report.json").exists())
+            baseline_trial = json.loads((Path(result.run_dir) / "baseline" / "trial.json").read_text())
+            baseline_report = Path(result.run_dir) / "nodes/node-0001/verification/verification_report.json"
+            self.assertEqual(Path(baseline_trial["verification_report"]), baseline_report)
+            self.assertTrue(baseline_report.is_file())
             self.assertTrue((Path(result.run_dir) / "regions" / "node-0001.region.json").exists())
-            self.assertTrue((Path(result.run_dir) / "trials" / "node-0002" / "verification_report.json").exists())
+            self.assertEqual(
+                Path(node2_trial["verification_report"]),
+                Path(result.run_dir) / "nodes/node-0002/verification/verification_report.json",
+            )
             self.assertTrue((Path(result.run_dir) / "profile" / "node-0002.profile_probe.json").exists())
             self.assertEqual(archive_records[0]["verification"]["verdict"], "keep")
             self.assertTrue(archive_records[0]["verification"]["report_path"])

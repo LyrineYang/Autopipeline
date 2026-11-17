@@ -100,10 +100,14 @@ model overrides. Other coding agents can use `--executor-command`.
 | `completed_no_improvement` | Search finished and the selected implementation verified. See the report for tried and rejected candidates. |
 | `failed` or `interrupted` | The run directory holds available evidence. Inspect the reason before starting a new run. |
 
-`promoted_pipeline/` contains the selected code when verification succeeds. The report separates
-proposals, candidate executions, evaluations, budget skips, and agent calls.
-`autopipeline report RUN_DIR` shows the outcome and diagnostic paths. Its exit code reports whether
-the report could be generated. [Run artifact reference](dev/run-artifacts.md)
+`promoted_pipeline/` contains the selected code when verification succeeds. The report opens with
+final correctness, the reference and candidate latency from that same final check, run time, and
+agent calls and recorded tokens. Fields missing from older runs appear as **Unavailable**.
+
+Expand **Branch details** for the iteration map, which plots measured attempts and highlights the
+best kept measurement. The tables show each branch's parent, round, and outcome. Candidate proposals,
+executions, evaluations, and budget skips have separate counts. The `autopipeline report RUN_DIR`
+exit code reports whether the report could be generated. [Run artifact reference](dev/run-artifacts.md)
 
 | Symptom | Check |
 | --- | --- |

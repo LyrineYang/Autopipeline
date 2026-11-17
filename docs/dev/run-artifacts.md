@@ -12,10 +12,14 @@ reference or candidate failures. [Result guide](../quickstart.md#read-results)
 | `search_state.json` and `tree_events.jsonl` | Tree state, individual edit and evaluation events, and role usage. |
 | `nodes/*/agent/` | Agent requests, responses, timeouts, and errors. |
 | `nodes/*/verification/` | Reference and candidate metrics, verifier report, and evaluator logs for each node. |
+| `baseline/trial.json` and `trials/*/trial.json` | Trial metadata and a path to the verifier report under `nodes/`. |
 | `promoted_pipeline/` | Selected code when promotion succeeds. The baseline can be selected. |
 | `promoted_pipeline/.autopipeline/` | Profiler trace and operator statistics. |
 | `final_verification/` | Final reference/candidate comparison and verdict. |
-| `view/` | Derived browser dashboard and text summary. |
+| `view/` | Regenerable dashboard, Markdown summary, iteration SVG, and structured views. |
+
+New evaluator subprocesses skip Python bytecode caches. Baseline and trial metadata point to the
+original verifier report. Older run directories can be passed directly to `autopipeline report`.
 
 `search_counts` counts distinct non-baseline candidates. A proposal is a node created by
 the scheduler. Execution means its executor started, including an execution that failed.
@@ -27,9 +31,9 @@ An older run without a role ledger can omit its agent call count.
 
 Native evaluator artifacts use `forward_latency_ms` for measured latency and retain
 `end_to_end_ms` for older specs. The verifier stores raw values and the pair's ranking
-score separately. Use `duration_seconds` for whole-run wall time and the budget ledger
-for tokens and role calls. Inspect final verification for exportable latency. To compare
-close gains, rerun finalists under the same conditions.
+score separately. The report overview reads the final verification pair, the receipt's
+`duration_seconds`, and the budget ledger. The iteration SVG under **Branch details** displays
+search measurements. To compare close gains, rerun finalists under the same conditions.
 
 For wheel acceptance, run the following outside the source tree with the target Python
 environment. It evaluates a real CPU workload, exports and rechecks it, and tests rejection.
